@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+
+# Electron-builder cache
+.electron-builder/
+
+# SQLite databases — never commit marks or student data
+*.db
+*.db-shm
+*.db-wal
+*_backup_*.db
+
+# macOS
+.DS_Store
+*.pem
+
+# Editor
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Logs
+npm-debug.log*
+*.log
+
+# Environment
+.env
+.env.local

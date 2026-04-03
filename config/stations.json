@@ -1,0 +1,79 @@
+{
+  "modules": [
+    {
+      "code": "HD",
+      "name": "Haemodynamic Assessment",
+      "stations": [
+        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 4, "label": "Station 4", "has_conclusion": false, "conclusion_reference_text": null }
+      ]
+    },
+    {
+      "code": "NB",
+      "name": "Nerve Block",
+      "stations": [
+        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 8, "label": "Station 8", "has_conclusion": false, "conclusion_reference_text": null }
+      ]
+    },
+    {
+      "code": "FC",
+      "name": "Fundamental Cardiac",
+      "stations": [
+        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 4,
+          "label": "Station 4",
+          "has_conclusion": true,
+          "conclusion_reference_text": "Pericardial Tamponade"
+        }
+      ]
+    },
+    {
+      "code": "AS",
+      "name": "Abdomen for Surgeons",
+      "stations": [
+        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 8,
+          "label": "Station 8",
+          "has_conclusion": true,
+          "conclusion_reference_text": "Right kidney: Moderate hydronephrosis without Calculi\nLeft kidney: Severe Hydronephrosis with Calculi"
+        }
+      ]
+    },
+    {
+      "code": "LM",
+      "name": "Lumps and Bumps",
+      "stations": [
+        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 8, "label": "Station 8", "has_conclusion": false, "conclusion_reference_text": null }
+      ]
+    },
+    {
+      "code": "PR",
+      "name": "Early Pregnancy Bleeding",
+      "stations": [
+        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
+        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 4,
+          "label": "Station 4",
+          "has_conclusion": true,
+          "conclusion_reference_text": "Right ectopic pregnancy with complex free fluid"
+        }
+      ]
+    }
+  ]
+}
