@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
 
-type MarkValue = 0 | 1 | null
+type MarkValue = number | null
 
 interface StudentImages {
   img1Path: string | null
@@ -502,13 +502,14 @@ function MarkDropdown({
       value={value === null ? '' : String(value)}
       onChange={(e) => {
         const v = e.target.value
-        onChange(v === '' ? null : (parseInt(v) as 0 | 1))
+        onChange(v === '' ? null : parseInt(v))
       }}
       className="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <option value="">—</option>
-      <option value="0">0</option>
-      <option value="1">1</option>
+      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+        <option key={n} value={n}>{n}</option>
+      ))}
     </select>
   )
 }

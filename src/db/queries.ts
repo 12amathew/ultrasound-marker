@@ -240,16 +240,25 @@ function runAgreementDetection(
   mark2: { img1_mark: number; img2_mark: number; conclusion_mark: number | null },
   has_conclusion: boolean
 ): void {
-  const img1Agrees = mark1.img1_mark === mark2.img1_mark
-  const img2Agrees = mark1.img2_mark === mark2.img2_mark
-  const conclusionAgrees = !has_conclusion || mark1.conclusion_mark === mark2.conclusion_mark
+  // Marks within 1 point of each other are treated as agreed.
+  const img1Agrees = Math.abs(mark1.img1_mark - mark2.img1_mark) <= 1
+  const img2Agrees = Math.abs(mark1.img2_mark - mark2.img2_mark) <= 1
+  const conclusionAgrees =
+    !has_conclusion ||
+    (mark1.conclusion_mark !== null &&
+      mark2.conclusion_mark !== null &&
+      Math.abs(mark1.conclusion_mark - mark2.conclusion_mark) <= 1)
 
   if (img1Agrees && img2Agrees && conclusionAgrees) {
-    const score = calcStationScore(
-      mark1.img1_mark,
-      mark1.img2_mark,
-      has_conclusion ? mark1.conclusion_mark : null
-    )
+    // Use the average of the two marks rounded to the nearest integer.
+    const img1 = Math.round((mark1.img1_mark + mark2.img1_mark) / 2)
+    const img2 = Math.round((mark1.img2_mark + mark2.img2_mark) / 2)
+    const conclusion =
+      has_conclusion && mark1.conclusion_mark !== null && mark2.conclusion_mark !== null
+        ? Math.round((mark1.conclusion_mark + mark2.conclusion_mark) / 2)
+        : null
+
+    const score = calcStationScore(img1, img2, has_conclusion ? conclusion : null)
     db.prepare(`
       INSERT INTO resolved_marks
         (student_id, module_code, station_number, img1_mark, img2_mark, conclusion_mark, station_score, resolution_type, resolved_by, resolved_at)
@@ -260,7 +269,7 @@ function runAgreementDetection(
         resolution_type='agreed', resolved_by=NULL, resolved_at=excluded.resolved_at
     `).run(
       student_id, module_code, station_number,
-      mark1.img1_mark, mark1.img2_mark, has_conclusion ? mark1.conclusion_mark : null,
+      img1, img2, has_conclusion ? conclusion : null,
       score, new Date().toISOString()
     )
     setMarkingState(db, student_id, module_code, station_number, 'AGREED')
