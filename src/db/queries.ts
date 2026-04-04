@@ -4,10 +4,11 @@ import type { MarkingState } from '../types'
 // ─── Scoring ────────────────────────────────────────────────────────────────
 
 export function calcStationScore(
-  img1: number,
-  img2: number,
+  img1: number | null,
+  img2: number | null,
   conclusion: number | null
-): number {
+): number | null {
+  if (img1 === null || img2 === null) return null
   if (conclusion === null) {
     return img1 + img2
   }
@@ -105,8 +106,8 @@ export function saveExaminerMark(
   module_code: string,
   station_number: number,
   examiner_name: string,
-  img1_mark: number,
-  img2_mark: number,
+  img1_mark: number | null,
+  img2_mark: number | null,
   conclusion_mark: number | null,
   has_conclusion: boolean
 ): void {
@@ -117,6 +118,12 @@ export function saveExaminerMark(
     INSERT INTO examiner_marks
       (student_id, module_code, station_number, examiner_name, img1_mark, img2_mark, conclusion_mark, station_score, marked_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(student_id, module_code, station_number, examiner_name)
+    DO UPDATE SET img1_mark = excluded.img1_mark,
+                  img2_mark = excluded.img2_mark,
+                  conclusion_mark = excluded.conclusion_mark,
+                  station_score = excluded.station_score,
+                  marked_at = excluded.marked_at
   `).run(
     student_id, module_code, station_number, examiner_name,
     img1_mark, img2_mark, conclusion_mark, station_score, marked_at
@@ -130,23 +137,34 @@ export function saveExaminerMark(
        ORDER BY marked_at ASC`
     )
     .all(student_id, module_code, station_number) as Array<{
-      img1_mark: number; img2_mark: number; conclusion_mark: number | null
-      station_score: number; examiner_name: string
+      img1_mark: number | null; img2_mark: number | null; conclusion_mark: number | null
+      station_score: number | null; examiner_name: string
     }>
 
   if (marks.length === 1) {
     setMarkingState(db, student_id, module_code, station_number, 'FIRST_MARK')
   } else if (marks.length === 2) {
-    runAgreementDetection(db, student_id, module_code, station_number, marks[0], marks[1], has_conclusion)
+    // Only run agreement detection when both examiners have complete marks
+    const bothComplete = marks.every(
+      (m) => m.img1_mark !== null && m.img2_mark !== null
+    )
+    if (bothComplete) {
+      runAgreementDetection(
+        db, student_id, module_code, station_number,
+        marks[0] as { img1_mark: number; img2_mark: number; conclusion_mark: number | null },
+        marks[1] as { img1_mark: number; img2_mark: number; conclusion_mark: number | null },
+        has_conclusion
+      )
+    }
   }
 }
 
 export interface ExaminerMarkDetail {
   examiner_name: string
-  img1_mark: number
-  img2_mark: number
+  img1_mark: number | null
+  img2_mark: number | null
   conclusion_mark: number | null
-  station_score: number
+  station_score: number | null
   marked_at: string
 }
 
@@ -258,7 +276,7 @@ function runAgreementDetection(
         ? Math.round((mark1.conclusion_mark + mark2.conclusion_mark) / 2)
         : null
 
-    const score = calcStationScore(img1, img2, has_conclusion ? conclusion : null)
+    const score = calcStationScore(img1, img2, has_conclusion ? conclusion : null)!
     db.prepare(`
       INSERT INTO resolved_marks
         (student_id, module_code, station_number, img1_mark, img2_mark, conclusion_mark, station_score, resolution_type, resolved_by, resolved_at)
@@ -291,7 +309,7 @@ export function saveConsensus(
   conclusion_mark: number | null,
   has_conclusion: boolean
 ): void {
-  const score = calcStationScore(img1_mark, img2_mark, has_conclusion ? conclusion_mark : null)
+  const score = calcStationScore(img1_mark, img2_mark, has_conclusion ? conclusion_mark : null)!
   db.prepare(`
     INSERT INTO resolved_marks
       (student_id, module_code, station_number, img1_mark, img2_mark, conclusion_mark, station_score, resolution_type, resolved_by, resolved_at)
