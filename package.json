@@ -1,6 +1,6 @@
 {
   "name": "ultrasound-marker",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Ultrasound Assessment Marking Tool",
   "main": "out/main/index.js",
   "scripts": {
