@@ -50,10 +50,10 @@ export interface ReferenceImages {
 
 export interface ExaminerMarkDetail {
   examiner_name: string
-  img1_mark: number
-  img2_mark: number
+  img1_mark: number | null
+  img2_mark: number | null
   conclusion_mark: number | null
-  station_score: number
+  station_score: number | null
   marked_at: string
 }
 

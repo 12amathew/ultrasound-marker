@@ -59,8 +59,8 @@ const api = {
     module_code: string,
     station_number: number,
     examiner_name: string,
-    img1_mark: number,
-    img2_mark: number,
+    img1_mark: number | null,
+    img2_mark: number | null,
     conclusion_mark: number | null,
     has_conclusion: boolean
   ) =>

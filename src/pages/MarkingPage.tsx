@@ -81,6 +81,23 @@ export default function MarkingPage(): React.JSX.Element {
     setRefImages({ img1Path: null, img2Path: null })
   }
 
+  async function loadExistingMarks(s: { student_id: string; full_name: string }): Promise<void> {
+    const c = ctxRef.current
+    const examiner = examinerRef.current
+    if (!examiner) return
+    try {
+      const marks = await window.api.getExaminerMarks(s.student_id, c.module_code, c.station_number)
+      const myMark = marks.find((m: { examiner_name: string }) => m.examiner_name === examiner)
+      if (myMark) {
+        setImg1Mark(myMark.img1_mark)
+        setImg2Mark(myMark.img2_mark)
+        setConclusionMark(myMark.conclusion_mark)
+      }
+    } catch (err) {
+      console.error('Failed to load existing marks:', err)
+    }
+  }
+
   async function loadImagesFor(s: { student_id: string; full_name: string }): Promise<void> {
     const c = ctxRef.current
     setImagesLoading(true)
@@ -131,7 +148,7 @@ export default function MarkingPage(): React.JSX.Element {
     } finally {
       setLoading(false)
     }
-    await loadImagesFor(target)
+    await Promise.all([loadImagesFor(target), loadExistingMarks(target)])
   }
 
   async function loadNextInQueue(extraSkipIds: string[] = []): Promise<void> {
@@ -169,7 +186,7 @@ export default function MarkingPage(): React.JSX.Element {
         setStudent(next)
         setNoStudents(false)
         setLoading(false)
-        await loadImagesFor(next)
+        await Promise.all([loadImagesFor(next), loadExistingMarks(next)])
         return
       }
     } catch (err) {
@@ -202,12 +219,8 @@ export default function MarkingPage(): React.JSX.Element {
   }
 
   function validate(): boolean {
-    if (img1Mark === null || img2Mark === null) {
-      setValidationError('Please set marks for both Image 1 and Image 2.')
-      return false
-    }
-    if (ctx.has_conclusion && conclusionMark === null) {
-      setValidationError('Please set the Conclusion mark.')
+    if (img1Mark === null && img2Mark === null && conclusionMark === null) {
+      setValidationError('Please set at least one mark before saving.')
       return false
     }
     return true
@@ -221,8 +234,8 @@ export default function MarkingPage(): React.JSX.Element {
       ctx.module_code,
       ctx.station_number,
       examinerName!,
-      img1Mark!,
-      img2Mark!,
+      img1Mark,
+      img2Mark,
       ctx.has_conclusion ? conclusionMark : null,
       ctx.has_conclusion
     )
@@ -382,7 +395,7 @@ export default function MarkingPage(): React.JSX.Element {
       {/* Mark entry */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col gap-3">
         <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">
-          Scores — both required before saving
+          Scores — at least one required before saving
         </p>
         <div className="flex flex-wrap gap-3 items-stretch">
           <div className={`flex items-center gap-3 rounded-lg px-4 py-3 border-2 transition-colors ${
