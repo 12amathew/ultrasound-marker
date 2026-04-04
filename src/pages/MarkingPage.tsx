@@ -115,12 +115,14 @@ export default function MarkingPage(): React.JSX.Element {
   }
 
   async function loadSpecificStudent(target: { student_id: string; full_name: string }): Promise<void> {
+    const examiner = examinerRef.current
+    if (!examiner) { setLoadError('No examiner selected. Please log in again.'); return }
     const c = ctxRef.current
     resetForm()
     setLoadError(null)
     setLoading(true)
     try {
-      await window.api.acquireLock(target.student_id, c.module_code, c.station_number, examinerRef.current!)
+      await window.api.acquireLock(target.student_id, c.module_code, c.station_number, examiner)
       currentStudentRef.current = target
       setStudent(target)
       setNoStudents(false)
@@ -133,6 +135,8 @@ export default function MarkingPage(): React.JSX.Element {
   }
 
   async function loadNextInQueue(extraSkipIds: string[] = []): Promise<void> {
+    const examiner = examinerRef.current
+    if (!examiner) { setLoadError('No examiner selected. Please log in again.'); setLoading(false); return }
     const c = ctxRef.current
     resetForm()
     setLoadError(null)
@@ -144,7 +148,7 @@ export default function MarkingPage(): React.JSX.Element {
         const next = await window.api.getNextStudent(
           c.module_code,
           c.station_number,
-          examinerRef.current!,
+          examiner,
           localSkipList
         )
         if (!next) {
@@ -154,7 +158,7 @@ export default function MarkingPage(): React.JSX.Element {
           return
         }
         const locked = await window.api.acquireLock(
-          next.student_id, c.module_code, c.station_number, examinerRef.current!
+          next.student_id, c.module_code, c.station_number, examiner
         )
         if (!locked) {
           localSkipList.push(next.student_id)

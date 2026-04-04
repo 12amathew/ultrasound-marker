@@ -23,6 +23,7 @@ export interface FileSortResult {
 export interface StationProgress {
   station_number: number
   label: string
+  marked_by_me: number
   resolved: number
   total: number
   awaiting_second: number

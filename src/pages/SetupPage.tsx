@@ -5,14 +5,14 @@ import type { CsvImportResult, FileSortResult } from '../types/ipc'
 type Step = 'paths' | 'csv' | 'sort' | 'done'
 
 export default function SetupPage(): React.JSX.Element {
-  const { setScreen } = useAppStore()
+  const { setScreen, setupIsEdit } = useAppStore()
 
   const [step, setStep] = useState<Step>('paths')
 
   // Paths
   const [targetRoot, setTargetRoot] = useState('')
   const [refImagesRoot, setRefImagesRoot] = useState('')
-  const [dbPath, setDbPath] = useState('')
+  const [sourcePath, setSourcePath] = useState('')
 
   // CSV
   const [csvPath, setCsvPath] = useState('')
@@ -20,7 +20,6 @@ export default function SetupPage(): React.JSX.Element {
   const [csvLoading, setCsvLoading] = useState(false)
 
   // File sort
-  const [sourcePath, setSourcePath] = useState('')
   const [sortResult, setSortResult] = useState<FileSortResult | null>(null)
   const [sortLoading, setSortLoading] = useState(false)
 
@@ -28,16 +27,11 @@ export default function SetupPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Load persisted paths
     async function load(): Promise<void> {
-      const [tr, rr, dp] = await Promise.all([
-        window.api.configGet('target_root'),
-        window.api.configGet('reference_images_root'),
-        window.api.configGet('db_path')
-      ])
-      if (tr) setTargetRoot(tr)
-      if (rr) setRefImagesRoot(rr)
-      if (dp) setDbPath(dp)
+      const cfg = await window.api.getAppConfig()
+      if (cfg?.target_root) setTargetRoot(cfg.target_root)
+      if (cfg?.reference_images_root) setRefImagesRoot(cfg.reference_images_root)
+      if (cfg?.source_path) setSourcePath(cfg.source_path)
     }
     load()
   }, [])
@@ -50,11 +44,12 @@ export default function SetupPage(): React.JSX.Element {
     setSaving(true)
     setError(null)
     try {
-      const resolvedDbPath = dbPath || `${targetRoot}/marks.db`
-      await window.api.initDb(resolvedDbPath)
-      setDbPath(resolvedDbPath)
-      await window.api.configSet('target_root', targetRoot)
-      await window.api.configSet('reference_images_root', refImagesRoot)
+      const result = await window.api.saveAppConfig({
+        target_root: targetRoot,
+        reference_images_root: refImagesRoot,
+        source_path: sourcePath || undefined
+      })
+      if (!result.success) throw new Error(result.error ?? 'Unknown error')
       setStep('csv')
     } catch (e) {
       setError(String(e))
@@ -80,6 +75,8 @@ export default function SetupPage(): React.JSX.Element {
     setSortLoading(false)
   }
 
+  const steps: Step[] = ['paths', 'csv', 'sort', 'done']
+
   return (
     <div className="min-h-screen bg-slate-100 p-6">
       <div className="max-w-2xl mx-auto">
@@ -95,14 +92,13 @@ export default function SetupPage(): React.JSX.Element {
 
         {/* Step indicators */}
         <div className="flex gap-2 mb-8">
-          {(['paths', 'csv', 'sort', 'done'] as Step[]).map((s, i) => (
+          {steps.map((s) => (
             <div
               key={s}
               className={`flex-1 h-2 rounded-full transition-colors ${
                 s === step
                   ? 'bg-blue-600'
-                  : ['paths', 'csv', 'sort', 'done'].indexOf(step) >
-                    ['paths', 'csv', 'sort', 'done'].indexOf(s)
+                  : steps.indexOf(step) > steps.indexOf(s)
                   ? 'bg-blue-300'
                   : 'bg-slate-300'
               }`}
@@ -129,6 +125,15 @@ export default function SetupPage(): React.JSX.Element {
               onBrowse={async () => {
                 const p = await window.api.selectFolder()
                 if (p) setRefImagesRoot(p)
+              }}
+            />
+            <PathRow
+              label="Raw exam source folder"
+              hint="e.g. '26th March - USB stick images from practicals' (can also be set later)"
+              value={sourcePath}
+              onBrowse={async () => {
+                const p = await window.api.selectFolder()
+                if (p) setSourcePath(p)
               }}
             />
             {error && <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
@@ -194,22 +199,21 @@ export default function SetupPage(): React.JSX.Element {
               </div>
             )}
 
-            {csvResult && (
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setStep('sort')}
-                  className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700"
-                >
-                  Continue to File Sorter
-                </button>
-                <button
-                  onClick={() => setStep('sort')}
-                  className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50"
-                >
-                  Skip File Sorter
-                </button>
-              </div>
-            )}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStep('sort')}
+                disabled={!csvResult}
+                className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40"
+              >
+                Continue
+              </button>
+              <button
+                onClick={() => setStep('sort')}
+                className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50"
+              >
+                Skip
+              </button>
+            </div>
           </Card>
         )}
 
@@ -217,18 +221,10 @@ export default function SetupPage(): React.JSX.Element {
         {step === 'sort' && (
           <Card title="Step 3 — Sort Exam Files">
             <p className="text-slate-600 text-sm">
-              Select the raw exam source folder (e.g. the USB stick contents). Files will be{' '}
-              <strong>copied</strong> — originals are never moved or deleted.
+              Files will be <strong>copied</strong> from{' '}
+              <span className="font-mono text-xs bg-slate-100 px-1 rounded">{sourcePath}</span>{' '}
+              into the assessment folder — originals are never moved or deleted.
             </p>
-            <PathRow
-              label="Raw exam source folder"
-              hint="e.g. '26th March - USB stick images from practicals'"
-              value={sourcePath}
-              onBrowse={async () => {
-                const p = await window.api.selectFolder()
-                if (p) setSourcePath(p)
-              }}
-            />
             <button
               onClick={handleRunSort}
               disabled={!sourcePath || sortLoading}

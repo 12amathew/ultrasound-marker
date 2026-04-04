@@ -381,6 +381,7 @@ export interface StationProgress {
   module_code: string
   station_number: number
   total: number
+  marked_by_me: number
   resolved: number
   awaiting_second: number
   needs_resolution: number
@@ -389,10 +390,18 @@ export interface StationProgress {
 export function getStationProgress(
   db: Database.Database,
   module_code: string,
-  station_number: number
+  station_number: number,
+  examiner_name: string
 ): StationProgress {
   const total = (
     db.prepare('SELECT COUNT(*) as c FROM students WHERE module_code=?').get(module_code) as { c: number }
+  ).c
+
+  const marked_by_me = (
+    db.prepare(
+      `SELECT COUNT(*) as c FROM examiner_marks
+       WHERE module_code=? AND station_number=? AND lower(examiner_name)=lower(?)`
+    ).get(module_code, station_number, examiner_name) as { c: number }
   ).c
 
   const stateRows = db
@@ -410,6 +419,7 @@ export function getStationProgress(
     module_code,
     station_number,
     total,
+    marked_by_me,
     resolved: (byState['AGREED'] ?? 0) + (byState['RESOLVED'] ?? 0),
     awaiting_second: byState['FIRST_MARK'] ?? 0,
     needs_resolution: byState['DISAGREEMENT'] ?? 0

@@ -25,6 +25,7 @@ interface AppState {
   // Session
   screen: AppScreen
   examinerName: ExaminerName | null
+  setupIsEdit: boolean
 
   // Navigation context
   markingContext: MarkingContext | null
@@ -43,6 +44,8 @@ interface AppState {
   // Actions
   setExaminer: (name: ExaminerName) => void
   setScreen: (screen: AppScreen) => void
+  openSetupFresh: () => void
+  openSetupEdit: () => void
   openMarkingPage: (ctx: MarkingContext) => void
   openResolutionPage: (ctx: MarkingContext) => void
   openStudentList: (ctx: MarkingContext) => void
@@ -55,6 +58,7 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   screen: 'login',
   examinerName: null,
+  setupIsEdit: false,
   markingContext: null,
   resolutionContext: null,
   studentListContext: null,
@@ -64,6 +68,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   setExaminer: (name) => set({ examinerName: name, screen: 'dashboard' }),
   setScreen: (screen) => set({ screen }),
+  openSetupFresh: () => set({ screen: 'setup', setupIsEdit: false }),
+  openSetupEdit: () => set({ screen: 'setup', setupIsEdit: true }),
 
   openMarkingPage: (ctx) =>
     set({ markingContext: ctx, screen: 'marking', skipList: [], selectedStudent: null }),

@@ -13,16 +13,17 @@ export default function DashboardPage(): React.JSX.Element {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
   const refresh = useCallback(async () => {
-    const progress = await window.api.getDashboardProgress()
+    const progress = await window.api.getDashboardProgress(examinerName ?? '')
     setDashboardProgress(progress)
     setLastRefresh(new Date())
-  }, [setDashboardProgress])
+  }, [setDashboardProgress, examinerName])
 
   useEffect(() => {
+    setDashboardProgress([])
     refresh()
     const interval = setInterval(refresh, REFRESH_INTERVAL_MS)
     return () => clearInterval(interval)
-  }, [refresh])
+  }, [refresh, setDashboardProgress])
 
   function toggleModule(code: string): void {
     setExpandedModules((prev) => {
@@ -88,16 +89,15 @@ export default function DashboardPage(): React.JSX.Element {
 
         {dashboardProgress
           .filter((mod) => {
+            if (!examinerName) return true
             const assigned = EXAMINER_MODULES[examinerName as ExaminerName]
             return assigned === null || assigned.includes(mod.module_code)
           })
           .map((mod) => {
           const isExpanded = expandedModules.has(mod.module_code)
-          const totalResolved = mod.stations.reduce((s, st) => s + st.resolved, 0)
-          const totalPossible = mod.stations.reduce((s, st) => s + st.total, 0)
+          const totalMarkedByMe = mod.stations.reduce((s, st) => s + (st.marked_by_me ?? 0), 0)
+          const totalPossible = mod.total_students * mod.stations.length
           const totalNeeds = mod.stations.reduce((s, st) => s + st.needs_resolution, 0)
-
-          const totalSlots = mod.total_students * mod.stations.length
 
           return (
             <div key={mod.module_code} className="bg-white rounded-2xl shadow overflow-hidden">
@@ -107,7 +107,7 @@ export default function DashboardPage(): React.JSX.Element {
                 className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex items-center gap-4">
-                  <CircularProgress value={totalResolved} max={totalSlots} size={48} />
+                  <CircularProgress value={totalMarkedByMe} max={totalPossible} size={48} />
                   <div className="text-left">
                     <p className="font-bold text-slate-800">
                       {mod.module_name}{' '}
@@ -116,7 +116,7 @@ export default function DashboardPage(): React.JSX.Element {
                     <p className="text-sm text-slate-500">
                       {mod.total_students === 0
                         ? <span className="text-amber-600 font-semibold">No students imported</span>
-                        : <>{totalResolved} of {totalSlots} slots fully resolved</>
+                        : <>{totalMarkedByMe} of {totalPossible} marked by you</>
                       }
                       {totalNeeds > 0 && (
                         <span className="ml-2 text-amber-600 font-semibold">· {totalNeeds} need resolution</span>
@@ -197,11 +197,11 @@ function StationRow({
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-slate-50 last:border-0 hover:bg-slate-50">
       <div className="flex items-center gap-4">
-        <CircularProgress value={station.resolved} max={station.total} size={36} />
+        <CircularProgress value={station.marked_by_me ?? 0} max={station.total} size={36} />
         <div>
           <p className="font-medium text-slate-700 text-sm">{station.label}</p>
           <p className="text-xs text-slate-400">
-            {station.resolved}/{station.total} resolved
+            {station.marked_by_me ?? 0}/{station.total} marked by you
             {station.awaiting_second > 0 && ` · ${station.awaiting_second} awaiting 2nd mark`}
           </p>
           {hasConclusion && isPlaceholder && (

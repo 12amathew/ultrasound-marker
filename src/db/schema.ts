@@ -84,6 +84,14 @@ export function initSchema(db: Database.Database): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS setup_config (
+      id                    INTEGER PRIMARY KEY CHECK (id = 1),
+      target_root           TEXT NOT NULL,
+      reference_images_root TEXT NOT NULL,
+      source_path           TEXT,
+      configured_at         TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS excluded_enrollments (
       student_id    TEXT NOT NULL,
       module_code   TEXT NOT NULL,
@@ -96,4 +104,11 @@ export function initSchema(db: Database.Database): void {
     INSERT OR IGNORE INTO excluded_enrollments (student_id, module_code, reason)
     VALUES ('100114827', 'AS', 'Student did not sit AS practical assessments');
   `)
+
+  // Migration: add source_path to setup_config if it doesn't exist yet
+  try {
+    db.exec(`ALTER TABLE setup_config ADD COLUMN source_path TEXT`)
+  } catch {
+    // Column already exists — safe to ignore
+  }
 }

@@ -2,19 +2,15 @@ import React, { useEffect, useState } from 'react'
 import { useAppStore, EXAMINERS, type ExaminerName } from '../store/appStore'
 
 export default function LoginPage(): React.JSX.Element {
-  const { setExaminer, setScreen } = useAppStore()
+  const { setExaminer, openSetupEdit } = useAppStore()
   const [selected, setSelected] = useState<ExaminerName | ''>('')
   const [dbReady, setDbReady] = useState(false)
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
-    // Check if a DB path is already configured from a previous session
     async function checkDb(): Promise<void> {
-      const dbPath = await window.api.configGet('db_path')
-      if (dbPath) {
-        const loaded = await window.api.loadExistingDb(dbPath)
-        setDbReady(loaded)
-      }
+      const result = await window.api.autoLoad()
+      setDbReady(result.configured)
       setChecking(false)
     }
     checkDb()
@@ -62,16 +58,16 @@ export default function LoginPage(): React.JSX.Element {
 
         {!dbReady && (
           <p className="text-amber-600 text-sm bg-amber-50 border border-amber-200 rounded-lg p-3">
-            No database found. Please complete Setup before marking.
+            First time setup required. Click Edit Setup to configure your folders.
           </p>
         )}
 
         <div className="flex gap-3 mt-2">
           <button
-            onClick={() => setScreen('setup')}
+            onClick={openSetupEdit}
             className="flex-1 py-2 px-4 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm font-medium"
           >
-            Setup
+            Edit Setup
           </button>
           <button
             onClick={handleBegin}

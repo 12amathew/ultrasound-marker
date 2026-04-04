@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, dirname, basename } from 'path'
-import { existsSync, copyFileSync, mkdirSync } from 'fs'
+import { join, basename } from 'path'
+import { existsSync, copyFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'fs'
 import Database from 'better-sqlite3'
 import { initSchema } from '../db/schema'
 import {
@@ -27,6 +27,9 @@ import { exportResults } from '../ipc/export'
 import stationsConfig from '../../config/stations.json'
 import type { ModuleProgress } from '../types/ipc'
 
+// Ensure consistent userData path between dev and prod (both use productName)
+app.setName('Ultrasound Marker')
+
 // ── Database singleton ───────────────────────────────────────────────────────
 
 let db: Database.Database | null = null
@@ -36,18 +39,78 @@ function getDb(): Database.Database {
   return db
 }
 
-function initDb(dbPath: string): void {
-  const dir = dirname(dbPath)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+// ── Persisted config (config.json in userData) ───────────────────────────────
 
-  if (existsSync(dbPath)) {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-')
-    const backupPath = dbPath.replace('.db', `_backup_${ts}.db`)
-    copyFileSync(dbPath, backupPath)
+interface PersistedConfig {
+  target_root: string
+  reference_images_root: string
+  source_path?: string
+}
+
+function getConfigFilePath(): string {
+  return join(app.getPath('userData'), 'config.json')
+}
+
+function readPersistedConfig(): PersistedConfig | null {
+  const p = getConfigFilePath()
+  if (!existsSync(p)) return null
+  try {
+    return JSON.parse(readFileSync(p, 'utf-8')) as PersistedConfig
+  } catch {
+    return null
+  }
+}
+
+function writePersistedConfig(cfg: PersistedConfig): void {
+  const dir = app.getPath('userData')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  writeFileSync(getConfigFilePath(), JSON.stringify(cfg, null, 2), 'utf-8')
+}
+
+// ── Database init ─────────────────────────────────────────────────────────────
+
+function initDb(): void {
+  const userDataDir = app.getPath('userData')
+  if (!existsSync(userDataDir)) mkdirSync(userDataDir, { recursive: true })
+
+  const newDbPath = join(userDataDir, 'marks.db')
+
+  // One-time migration: if new DB doesn't exist yet, check old Dropbox location
+  if (!existsSync(newDbPath)) {
+    const cfg = readPersistedConfig()
+    if (cfg?.target_root) {
+      const oldDbPath = join(cfg.target_root, 'marks.db')
+      if (existsSync(oldDbPath)) {
+        try {
+          const oldDb = new Database(oldDbPath, { readonly: true })
+          const count = (oldDb.prepare('SELECT COUNT(*) as c FROM examiner_marks').get() as { c: number }).c
+          oldDb.close()
+          if (count > 0) copyFileSync(oldDbPath, newDbPath)
+        } catch {
+          // Old DB corrupt or incompatible — start fresh
+        }
+      }
+    }
   }
 
-  db = new Database(dbPath)
+  db = new Database(newDbPath)
   initSchema(db)
+
+  // Clean up old DB, WAL/SHM files, and backup files from Dropbox folder (non-fatal)
+  const cfg = readPersistedConfig()
+  if (cfg?.target_root) {
+    try {
+      for (const suffix of ['marks.db', 'marks.db-wal', 'marks.db-shm']) {
+        const p = join(cfg.target_root, suffix)
+        try { if (existsSync(p)) unlinkSync(p) } catch { /* may be locked */ }
+      }
+      for (const f of readdirSync(cfg.target_root)) {
+        if (f.startsWith('marks_backup_') && (f.endsWith('.db') || f.endsWith('.db-wal') || f.endsWith('.db-shm'))) {
+          try { unlinkSync(join(cfg.target_root, f)) } catch { /* may be locked */ }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
 }
 
 // ── Window ───────────────────────────────────────────────────────────────────
@@ -129,16 +192,44 @@ function registerIpcHandlers(): void {
     return result.canceled ? null : result.filePaths[0]
   })
 
-  ipcMain.handle('setup:initDb', (_e, dbPath: string) => {
-    initDb(dbPath)
-    setConfig(getDb(), 'db_path', dbPath)
+  // Auto-load on startup: reads config.json, opens DB, returns config to renderer
+  ipcMain.handle('setup:autoLoad', () => {
+    const cfg = readPersistedConfig()
+    if (!cfg) return { configured: false }
+    try {
+      initDb()
+      return { configured: true, config: cfg }
+    } catch (err) {
+      return { configured: false, error: String(err) }
+    }
   })
 
-  ipcMain.handle('setup:loadExistingDb', (_e, dbPath: string) => {
-    if (!existsSync(dbPath)) return false
-    db = new Database(dbPath)
-    initSchema(db)
-    return true
+  // Returns persisted config for pre-populating the Edit Setup form
+  ipcMain.handle('setup:getConfig', () => {
+    return readPersistedConfig()
+  })
+
+  // Called by SetupPage on first run or when editing config
+  ipcMain.handle('setup:saveConfig', (_e, cfg: PersistedConfig) => {
+    try {
+      writePersistedConfig(cfg)
+      if (!db) initDb()
+      getDb().prepare(`
+        INSERT INTO setup_config (id, target_root, reference_images_root, source_path, configured_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          target_root=excluded.target_root,
+          reference_images_root=excluded.reference_images_root,
+          source_path=excluded.source_path,
+          configured_at=excluded.configured_at
+      `).run(cfg.target_root, cfg.reference_images_root, cfg.source_path ?? null, new Date().toISOString())
+      setConfig(getDb(), 'target_root', cfg.target_root)
+      setConfig(getDb(), 'reference_images_root', cfg.reference_images_root)
+      if (cfg.source_path) setConfig(getDb(), 'source_path', cfg.source_path)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
   })
 
   // ── CSV Import ─────────────────────────────────────────────────────────────
@@ -174,15 +265,16 @@ function registerIpcHandlers(): void {
 
   // ── Dashboard ──────────────────────────────────────────────────────────────
 
-  ipcMain.handle('dashboard:progress', () => {
+  ipcMain.handle('dashboard:progress', (_e, examiner_name: string) => {
     const database = getDb()
     const progress: ModuleProgress[] = stationsConfig.modules.map((mod) => {
       const students = getStudentsByModule(database, mod.code)
       const stations = mod.stations.map((st) => {
-        const p = getStationProgress(database, mod.code, st.number)
+        const p = getStationProgress(database, mod.code, st.number, examiner_name)
         return {
           station_number: st.number,
           label: st.label,
+          marked_by_me: p.marked_by_me,
           resolved: p.resolved,
           total: p.total,
           awaiting_second: p.awaiting_second,

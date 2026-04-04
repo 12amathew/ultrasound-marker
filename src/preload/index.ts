@@ -9,8 +9,12 @@ const api = {
   // Setup
   selectFolder: () => ipcRenderer.invoke('setup:selectFolder'),
   selectFile: (filters?: Electron.FileFilter[]) => ipcRenderer.invoke('setup:selectFile', filters),
-  initDb: (dbPath: string) => ipcRenderer.invoke('setup:initDb', dbPath),
-  loadExistingDb: (dbPath: string) => ipcRenderer.invoke('setup:loadExistingDb', dbPath),
+  autoLoad: (): Promise<{ configured: boolean; config?: { target_root: string; reference_images_root: string; source_path?: string }; error?: string }> =>
+    ipcRenderer.invoke('setup:autoLoad'),
+  getAppConfig: (): Promise<{ target_root: string; reference_images_root: string; source_path?: string } | null> =>
+    ipcRenderer.invoke('setup:getConfig'),
+  saveAppConfig: (cfg: { target_root: string; reference_images_root: string; source_path?: string }): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('setup:saveConfig', cfg),
 
   // CSV
   importCsv: (filePath: string) => ipcRenderer.invoke('csv:import', filePath),
@@ -30,7 +34,7 @@ const api = {
     ipcRenderer.invoke('students:withState', module_code, station_number),
 
   // Dashboard
-  getDashboardProgress: () => ipcRenderer.invoke('dashboard:progress'),
+  getDashboardProgress: (examiner_name: string) => ipcRenderer.invoke('dashboard:progress', examiner_name),
 
   // Marking
   getNextStudent: (
