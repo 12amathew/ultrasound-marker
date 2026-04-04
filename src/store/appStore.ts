@@ -19,6 +19,7 @@ interface MarkingContext {
   station_number: number
   has_conclusion: boolean
   conclusion_reference_text: string | null
+  candidate_instructions: string | null
 }
 
 interface AppState {

@@ -147,7 +147,8 @@ export default function DashboardPage(): React.JSX.Element {
                             module_name: mod.module_name,
                             station_number: st.station_number,
                             has_conclusion: stConfig?.has_conclusion ?? false,
-                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null
+                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null,
+                            candidate_instructions: stConfig?.candidate_instructions ?? null
                           })
                         }
                         onResolve={() =>
@@ -156,7 +157,8 @@ export default function DashboardPage(): React.JSX.Element {
                             module_name: mod.module_name,
                             station_number: st.station_number,
                             has_conclusion: stConfig?.has_conclusion ?? false,
-                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null
+                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null,
+                            candidate_instructions: stConfig?.candidate_instructions ?? null
                           })
                         }
                       />
