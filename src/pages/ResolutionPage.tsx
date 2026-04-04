@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
+import CandidateInstructionsPanel from '../components/CandidateInstructionsPanel'
 import type { ExaminerMarkDetail, DisagreementRow } from '../types/ipc'
 
 type MarkValue = number | null
@@ -182,6 +183,7 @@ export default function ResolutionPage(): React.JSX.Element {
 
         {/* Right: resolution panel */}
         <div className="flex-1 flex flex-col gap-4 min-h-0 overflow-y-auto">
+          <CandidateInstructionsPanel moduleCode={ctx.module_code} stationNumber={ctx.station_number} />
           <div className="bg-white rounded-xl border border-slate-200 p-5">
             <h2 className="font-bold text-slate-800 mb-1">
               Resolve: {currentStudent.full_name}{' '}
