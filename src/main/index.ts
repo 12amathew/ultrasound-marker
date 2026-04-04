@@ -403,7 +403,12 @@ function registerIpcHandlers(): void {
       filters: [{ name: 'Excel', extensions: ['xlsx'] }]
     })
     if (result.canceled || !result.filePath) return
-    await exportResults(getDb(), result.filePath)
+    try {
+      await exportResults(getDb(), result.filePath)
+    } catch (err) {
+      dialog.showErrorBox('Export Failed', String(err))
+      throw err
+    }
   })
 
   // ── Reset marks ───────────────────────────────────────────────────────────
