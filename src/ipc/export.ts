@@ -30,6 +30,9 @@ export async function exportResults(db: Database.Database, outputPath: string): 
   workbook.creator = 'Ultrasound Marker'
   workbook.created = new Date()
 
+  // Create Summary sheet first so it appears as the first tab
+  const summary = workbook.addWorksheet('Summary')
+
   const summaryRows: {
     student_id: string
     full_name: string
@@ -66,6 +69,8 @@ export async function exportResults(db: Database.Database, outputPath: string): 
       if (st.has_conclusion) headers.push(`S${s} Final Conclusion`)
       headers.push(`S${s} Score`)
       headers.push(`S${s} Resolution`)
+      headers.push(`S${s} E1 Name`)
+      headers.push(`S${s} E2 Name`)
     }
 
     headers.push('Total Practical Score')
@@ -138,6 +143,8 @@ export async function exportResults(db: Database.Database, outputPath: string): 
             ? 'agreed'
             : 'resolved'
         )
+        row.push(e1?.examiner_name ?? null)
+        row.push(e2?.examiner_name ?? null)
 
         if (resolved) {
           totalScore = (totalScore ?? 0) + resolved.station_score
@@ -190,8 +197,7 @@ export async function exportResults(db: Database.Database, outputPath: string): 
     sheet.views = [{ state: 'frozen', ySplit: 1 }]
   }
 
-  // ── Summary sheet ──────────────────────────────────────────────────────────
-  const summary = workbook.addWorksheet('Summary')
+  // ── Summary sheet (already created above) ─────────────────────────────────
   summary.properties.defaultColWidth = 20
   const sumHeader = summary.addRow([
     'Student ID', 'Full Name', 'Module',
@@ -215,9 +221,6 @@ export async function exportResults(db: Database.Database, outputPath: string): 
   }
 
   summary.views = [{ state: 'frozen', ySplit: 1 }]
-
-  // Move Summary to first position
-  workbook.moveWorksheet('Summary', 1)
 
   await workbook.xlsx.writeFile(outputPath)
 }
