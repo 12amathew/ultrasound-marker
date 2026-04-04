@@ -4,34 +4,101 @@
       "code": "HD",
       "name": "Haemodynamic Assessment",
       "stations": [
-        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 4, "label": "Station 4", "has_conclusion": false, "conclusion_reference_text": null }
+        {
+          "number": 1,
+          "label": "Station 1",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS haemodynamic assessment efficiently. Obtain best possible views as listed and ensure that these images are saved. Only one image will be considered where an image is specified.\n\n1. Obtain the best possible subcostal long-axis IVC view.\n\nAdd M-mode.\n\nPosition the cursor on the IVC approximately 2 cm from where the IVC enters the right atrium.\n\nObtain a full sweep of M-mode on-screen ensuring that the image shows respiratory variation in the IVC diameter.\n\nFreeze and save\n\n2. Obtain a B-mode image of the IVC using the trans-hepatic window.\nFreeze and save."
+        },
+        {
+          "number": 2,
+          "label": "Station 2",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS haemodynamic assessment efficiently. Obtain best possible views as listed and ensure that these images are saved. Only one image will be considered where an image is specified.\n\n1. Obtain a long-axis view of the portal vein at the porta hepatis.\n\nOptimise the image.\n\nAdd colour flow Doppler to show flow within the portal vein.\n\nFreeze and Save.\n\n2. Obtain a long-axis view of the portal vein at the porta hepatis.\n\nPlace the pulse wave Doppler gate (sample volume) in the portal vein.\n\nOptimise baseline, scale, and gain until a clear portal vein waveform is obtained.\n\nFreeze and save"
+        },
+        {
+          "number": 3,
+          "label": "Station 3",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS haemodynamic assessment efficiently. Obtain best possible views as listed and ensure that these images are saved. Only one image will be considered where an image is specified.\n\n1. Obtain a longitudinal view of the right common carotid artery.\n\nOptimise the image.\n\nFreeze and save\n\n2. Obtain a longitudinal view of the right common carotid artery (as above).\n\nApply colour flow Doppler and pulse wave (PW) Doppler to the image.\n\nPlace the pulse wave gate (sample volume) in the centre of the artery and apply an angle correction \u2264 60\u00b0.\n\nOptimise baseline, scale, and gain to produce a clean spectral Doppler trace.\n\nFreeze and add calipers.\n\nMeasure the cycle length.\n\nSave the image ensuring that the calipers and cycle length measurement are clearly shown."
+        },
+        {
+          "number": 4,
+          "label": "Station 4",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS haemodynamic assessment efficiently. Obtain best possible views as listed and ensure that these images are saved. Only one image will be considered where an image is specified.\n\n1. Obtain a view of the junction of the hepatic vein (any branch) and IVC.\n\nFreeze and save\n\n2. Obtain a view of the junction of the hepatic vein and IVC (as above).\n\nAdd pulse wave (PW) Doppler and insert the gate (sample volume) into a branch of the hepatic vein and adjust the angle appropriately to maximise the flow shown.\n\nObtain a full screen of this spectral PW Doppler flow.\n\nFreeze.\n\nAnnotate the spectral signal. Identify the \u2018S-wave\u2019 and label this with an \u2018S\u2019. Identify the \u2018D-wave\u2019 and label this with a \u2018D\u2019.\n\nSave, ensuring that all annotations are saved with the image"
+        }
       ]
     },
     {
       "code": "NB",
       "name": "Nerve Block",
       "stations": [
-        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 8, "label": "Station 8", "has_conclusion": false, "conclusion_reference_text": null }
+        {
+          "number": 5,
+          "label": "Station 5",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake the tasks as indicated for this station listed below. Ensure that the image is saved. Only record one image, if more than one image is recorded, only the first one will be retained.\n\n1. Obtain a best possible ultrasound image as might be required when performing an infra-inguinal fascia iliaca plane block.\n\nAnnotate the following structures with the letter shown in brackets. This letter should be placed directly over the structure concerned in the image.\n\nFemoral artery (A), Femoral vein (V), Femoral nerve (N).\n\nSave the image.\n\n2. On the same side, reposition the probe to obtain best possible ultrasound image required for a PENG block.\n\nAnnotate the following structures with the letter shown in brackets. This letter should be placed directly over the structure concerned in the image.\n\nIliacus muscle (I), psoas muscle (P) and iliopsoas tendon (T).\n\nSave the image"
+        },
+        {
+          "number": 6,
+          "label": "Station 6",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Task: Undertake the task as indicated below.\n\n1. Obtain an appropriate image for a serratus anterior plane block.\n\nOn the screen add these annotations onto the image:\n\nIdentify the latissimus dorsi muscle mark this clearly with an \u2018L\u2019, similarly mark the serratus anterior muscle with an \u2018S\u2019 and a rib with an \u2018R\u2019.\n\nSave the image\n\n2. Obtain an appropriate image for an erector spinae block.\n\nOn the screen add this annotation onto the image:\n\nIdentify a transverse process, annotate with \u2018T\u2019.\n\nSave the image"
+        },
+        {
+          "number": 7,
+          "label": "Station 7",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Task: Obtain images as indicated below. Ensure that these images are saved. Only save one image at each location.\n\n1. The model supplied has one or more targets within it (for example a piece of olive). Scan the model and choose a suitable target\n\n2. Once a suitable target has been obtained, use ultrasound to guide an ultrasound-visible needle until it is just touching the target, with the needle bevel pointing upwards.\n\nObtain a long-axis view which shows the whole of the needle including the tip.\n\nFreeze and save.\n\n3. The next step is to advance the needle until it is within the target.\n\nRotate the ultrasound probe to obtain a short-axis view.\n\nObtain a view which shows the echoes from the tip of the needle within the target.\n\nFreeze and save."
+        },
+        {
+          "number": 8,
+          "label": "Station 8",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Task: Undertake the task as indicated below.\n\n1. Using the ultrasound machine, identify the simulation of a nerve within the gel.\n\n2. Using a syringe filled with 10ml water and a 100mm US needle, insert the needle in-plane until it is adjacent to a simulated nerve.\n\nSave an image showing the shaft of the needle and needle tip in position.\n\n3. Inject a small volume of water (1-2ml) around the nerve.\n\nSave an image showing fluid around the simulated nerve"
+        }
       ]
     },
     {
       "code": "FC",
       "name": "Fundamental Cardiac",
       "stations": [
-        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 1,
+          "label": "Station 1",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS cardiac assessment efficiently. Obtain best possible views as listed and save them as directed. If more than one image is obtained of any specified view then only the first one will be considered.\n\n1. Obtain the best possible parasternal long axis view. Freeze and save\n\n2. Obtain best possible parasternal short axis view at mitral valve level. Freeze and save"
+        },
+        {
+          "number": 2,
+          "label": "Station 2",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS cardiac assessment efficiently. Obtain best possible views as listed and save them as directed. If more than one image is obtained of any specified view then only the first one will be considered.\n\n1. Obtain the best possible parasternal long axis view. Freeze and save.\n\n2. Obtain the best possible apical four chamber view. Freeze and save."
+        },
+        {
+          "number": 3,
+          "label": "Station 3",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Undertake a PoCUS cardiac assessment efficiently. Obtain best possible views as listed and save them as directed.\n\n1. Obtain best possible parasternal short axis view at aortic valve level. Freeze and save.\n\n2. Obtain best possible subcostal (sub xiphoid) view. Freeze and save"
+        },
         {
           "number": 4,
           "label": "Station 4",
           "has_conclusion": true,
-          "conclusion_reference_text": "Pericardial Tamponade"
+          "conclusion_reference_text": "Pericardial Tamponade",
+          "candidate_instructions": "Task: Undertake a PoCUS cardiac assessment efficiently. Obtain best possible views as indicated below. Ensure that one image only is saved at each position. Record your conclusion on form E4.\n\n1. Obtain best possible subcostal (sub xiphoid) view. Freeze and save\n\n2. Obtain best possible inferior vena cava view. Freeze and save"
         }
       ]
     },
@@ -39,14 +106,33 @@
       "code": "AS",
       "name": "Abdomen for Surgeons",
       "stations": [
-        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 5,
+          "label": "Station 5",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Scrotum Model\n\n1. Obtain an optimum \u2018Spectacle View\u2019, freeze and save\n\n2. Identify any abnormality of the right testicle and save an optimum image of it."
+        },
+        {
+          "number": 6,
+          "label": "Station 6",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Task: Obtain ultrasound images from the abdomen, as indicated. Ensure that these images are saved. Only save one image at each location. Summarise any abnormalities found on Form D, and decide on the diagnosis.\n\n1. Obtain and save an optimal image of the left kidney and of any pathology present.\n\n2. Obtain and save an optimal image of the right kidney and of any pathology present."
+        },
+        {
+          "number": 7,
+          "label": "Station 7",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Obtain a series of ultrasound images from the abdomen. Only obtain the images indicated. Ensure that all images are saved.\n\n1. Obtain and save an optimal transverse view of the gallbladder\n\n2. Obtain and save an optimal longitudinal view of the gall bladder and measure the anterior wall thickness ensuring that the measurement result is saved with the image."
+        },
         {
           "number": 8,
           "label": "Station 8",
           "has_conclusion": true,
-          "conclusion_reference_text": "Right kidney: Moderate hydronephrosis without Calculi\nLeft kidney: Severe Hydronephrosis with Calculi"
+          "conclusion_reference_text": "Right kidney: Moderate hydronephrosis without Calculi\nLeft kidney: Severe Hydronephrosis with Calculi",
+          "candidate_instructions": "Assessment with live normal subject.\nTask: Obtain a series of ultrasound images from the abdomen. Only obtain the images indicated. Ensure that all images are saved.\n\n1. Obtain and save an optimal longitudinal view of the abdominal aorta ensuring that the superior mesenteric artery is shown branching from the aorta\n\n2. Obtain and save an optimal transverse view image of the aorta having measured the diameter immediately proximal to the bifurcation to the common iliac arteries. Ensure that the calipers and measurement are saved in the image"
         }
       ]
     },
@@ -54,24 +140,67 @@
       "code": "LM",
       "name": "Lumps and Bumps",
       "stations": [
-        { "number": 5, "label": "Station 5", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 6, "label": "Station 6", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 7, "label": "Station 7", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 8, "label": "Station 8", "has_conclusion": false, "conclusion_reference_text": null }
+        {
+          "number": 5,
+          "label": "Station 5",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Live Subject.\nTask: Obtain a series of ultrasound images of the popliteal region. Only obtain the images indicated and ensure that these images are saved.\n\n1. Obtain the best possible transverse ultrasound view of the popliteal fossa and identify the popliteal vein. Place a \u2018V\u2019 marker within the lumen of the vein. Freeze and save the image.\n\n2. Obtain a longitudinal ultrasound view of the popliteal vein. Freeze and save the image."
+        },
+        {
+          "number": 6,
+          "label": "Station 6",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Live Subject.\nTask: Obtain a series of ultrasound images of the carpal tunnel. Only obtain the images indicated and ensure that these images are saved.\n\nObtain an optimum transverse ultrasound image of the carpal tunnel at the volar wrist.\n\nFreeze and save.\n\nIdentify the median nerve. Add calipers, measure the median nerve anteroposterior diameter.\n\nFreeze and save."
+        },
+        {
+          "number": 7,
+          "label": "Station 7",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Live Subject.\nTask: Obtain a series of ultrasound images of the lateral neck. Only obtain the images indicated and ensure that these images are saved.\n\nObtain the best possible ultrasound image of the lateral neck and identify a lymph node.\nFreeze and save.\n\nAdd calipers and measure the length of the lymph-node.\n\nFreeze and save the image with the measurement."
+        },
+        {
+          "number": 8,
+          "label": "Station 8",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Live Subject.\nTask: Obtain a series of ultrasound images of the quadriceps tendon. Only obtain the images indicated and ensure that these images are saved.\n\n1. Obtain the best possible transverse ultrasound image of the quadriceps tendon at the superior pole of the patella.\n\nFreeze and save the image.\n\n2. Obtain a longitudinal ultrasound view of the quadriceps tendon and measure its thickness (anteroposterior diameter).\n\nFreeze and save the image with measurement."
+        }
       ]
     },
     {
       "code": "PR",
       "name": "Early Pregnancy Bleeding",
       "stations": [
-        { "number": 1, "label": "Station 1", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 2, "label": "Station 2", "has_conclusion": false, "conclusion_reference_text": null },
-        { "number": 3, "label": "Station 3", "has_conclusion": false, "conclusion_reference_text": null },
+        {
+          "number": 1,
+          "label": "Station 1",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with a normal subject.\nTask: Obtain a series of ultrasound images from the lower abdomen. Only obtain the images indicated and ensure that these images are saved.\n\n1. Use the split screen function, obtain images of the uterus in two planes one in each half of the split screen, each image should be frozen.\n\nUse calipers in each image to calculate the volume of the uterus.\n\nSave the split-screen image to include all caliper measurements and the volume calculation.\n\n2. Obtain a sagittal view of the Pouch of Douglas, freeze and annotate the image with a letter \u2018P\u2019 immediately over the Pouch of Douglas.\n\nSave the image including the annotation."
+        },
+        {
+          "number": 2,
+          "label": "Station 2",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Phantom.\nTask: Obtain a series of ultrasound images of the pelvic organs. Only obtain the images indicated and ensure that these images are saved.\n\n1. Using the transabdominal probe provided scan the lower abdomen of the scanning subject.\n\n2. Obtain an optimal image of the gestation sac and freeze.\n\nMeasure the gestational sac diameter (GSD) with calipers.\n\nSave the image ensuring that the calipers and measurement are clearly seen\n\n3. Identify the fetus and freeze the image.\n\nUsing calipers measure the crown-rump length.\n\nSave the image ensuring that the calipers and measurement are clearly seen"
+        },
+        {
+          "number": 3,
+          "label": "Station 3",
+          "has_conclusion": false,
+          "conclusion_reference_text": null,
+          "candidate_instructions": "Assessment with Phantom.\nTask: Obtain a series of ultrasound images of the pelvic organs. Only obtain the images indicated and ensure that these images are saved.\n\n1. Using the transvaginal probe provided and adequate quantities of gel scan the phantom provided and assess the simulated pelvic anatomy.\n\n2. Obtain an optimal image of the gestation sac and freeze.\n\nMeasure the gestational sac diameter (GSD) with calipers.\n\nSave the image ensuring that the calipers and measurement are clearly seen\n\n3. In the same phantom identify the fetus and freeze the image.\n\nUsing calipers measure the crown-rump length.\n\nSave the image ensuring that the calipers and measurement are clearly seen"
+        },
         {
           "number": 4,
           "label": "Station 4",
           "has_conclusion": true,
-          "conclusion_reference_text": "Right ectopic pregnancy with complex free fluid"
+          "conclusion_reference_text": "Right ectopic pregnancy with complex free fluid",
+          "candidate_instructions": "Assessment with simulator Body Works.\nTask: Obtain a series of ultrasound images from the lower abdomen. Only obtain the images indicated and ensure that all images are saved.\n\n1. Scan the uterus, cervix, fallopian tubes and ovaries of the simulated patient looking for any relevant abnormalities.\n\nIf any abnormality is found freeze the image.\nUse calipers to measure the diameter of the pathology.\n\nSave the image ensuring that the calipers and measurement are saved with the image\n\n2. Obtain a sagittal view of the pelvic organs paying particular attention to the Pouch of Douglas and freeze.\n\nSave the image.\n\n3. Record your conclusion on form E4"
         }
       ]
     }

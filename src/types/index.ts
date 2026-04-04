@@ -5,6 +5,7 @@ export interface StationConfig {
   label: string
   has_conclusion: boolean
   conclusion_reference_text: string | null
+  candidate_instructions: string | null
 }
 
 export interface ModuleConfig {

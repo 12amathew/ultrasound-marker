@@ -53,6 +53,7 @@ export default function MarkingPage(): React.JSX.Element {
   const [showingStudentImg, setShowingStudentImg] = useState<1 | 2>(1)
   const [showingRefImg, setShowingRefImg] = useState<1 | 2>(1)
   const [conclusionOpen, setConclusionOpen] = useState(false)
+  const [instructionsOpen, setInstructionsOpen] = useState(false)
 
   const [img1Mark, setImg1Mark] = useState<MarkValue>(null)
   const [img2Mark, setImg2Mark] = useState<MarkValue>(null)
@@ -72,6 +73,7 @@ export default function MarkingPage(): React.JSX.Element {
     setShowingStudentImg(1)
     setShowingRefImg(1)
     setConclusionOpen(false)
+    setInstructionsOpen(false)
     setStudentImg1Data(null)
     setStudentImg2Data(null)
     setRefImg1Data(null)
@@ -296,6 +298,24 @@ export default function MarkingPage(): React.JSX.Element {
 
   return (
     <MarkingShell ctx={ctx} examinerName={examinerName!} student={student ?? undefined} onBack={goBack}>
+      {/* Candidate Instructions */}
+      {ctx.candidate_instructions && (
+        <div className="border border-amber-200 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setInstructionsOpen(!instructionsOpen)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-amber-50 hover:bg-amber-100 text-sm font-semibold text-amber-800"
+          >
+            <span>Candidate Instructions</span>
+            <span>{instructionsOpen ? '\u25B2 Collapse' : '\u25BC Expand'}</span>
+          </button>
+          {instructionsOpen && (
+            <div className="p-4 bg-white text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+              {ctx.candidate_instructions}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main image area */}
       <div className="flex gap-4 flex-1 min-h-0">
         {/* Student image panel */}
