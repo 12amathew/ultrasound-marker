@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { useAppStore, EXAMINERS, type ExaminerName } from '../store/appStore'
+import { useAppStore, type ExaminerName } from '../store/appStore'
 
 export default function LoginPage(): React.JSX.Element {
-  const { setExaminer, openSetupEdit } = useAppStore()
+  const { setExaminer, openSetupEdit, setScreen } = useAppStore()
   const [selected, setSelected] = useState<ExaminerName | ''>('')
+  const [examiners, setExaminers] = useState<string[]>([])
   const [dbReady, setDbReady] = useState(false)
   const [checking, setChecking] = useState(true)
 
@@ -11,6 +12,8 @@ export default function LoginPage(): React.JSX.Element {
     async function checkDb(): Promise<void> {
       const result = await window.api.autoLoad()
       setDbReady(result.configured)
+      const cfg = await window.api.getActiveProfileConfig()
+      setExaminers(cfg?.examiners.map((e) => e.name) ?? [])
       setChecking(false)
     }
     checkDb()
@@ -41,7 +44,7 @@ export default function LoginPage(): React.JSX.Element {
           Examiner
         </label>
         <div className="flex flex-col gap-3">
-          {EXAMINERS.map((name) => (
+          {examiners.map((name) => (
             <button
               key={name}
               onClick={() => setSelected(name)}
@@ -55,6 +58,12 @@ export default function LoginPage(): React.JSX.Element {
             </button>
           ))}
         </div>
+
+        {dbReady && examiners.length === 0 && (
+          <p className="text-amber-600 text-sm bg-amber-50 border border-amber-200 rounded-lg p-3">
+            No examiners are configured for the active assessment profile.
+          </p>
+        )}
 
         {!dbReady && (
           <p className="text-amber-600 text-sm bg-amber-50 border border-amber-200 rounded-lg p-3">
@@ -70,8 +79,14 @@ export default function LoginPage(): React.JSX.Element {
             Edit Setup
           </button>
           <button
+            onClick={() => setScreen('admin')}
+            className="flex-1 py-2 px-4 rounded-xl border border-blue-300 text-blue-700 hover:bg-blue-50 text-sm font-semibold"
+          >
+            Admin
+          </button>
+          <button
             onClick={handleBegin}
-            disabled={!selected || !dbReady}
+            disabled={!selected || examiners.length === 0}
             className="flex-1 py-2 px-4 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Begin Marking

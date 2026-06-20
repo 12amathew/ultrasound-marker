@@ -1,4 +1,4 @@
-import type { Api } from '../../electron/preload'
+import type { Api } from '../preload'
 
 declare global {
   interface Window {

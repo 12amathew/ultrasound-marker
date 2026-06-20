@@ -1,226 +1,182 @@
 import ExcelJS from 'exceljs'
 import type Database from 'better-sqlite3'
-import stationsConfig from '../../config/stations.json'
+import { getActiveProfileId, getProfileModules } from '../db/queries'
 
 interface StudentResult {
   student_id: string
   full_name: string
-  module_code: string
 }
 
-interface ExaminerMarkRow {
+interface ExaminerResponseRow {
   examiner_name: string
-  img1_mark: number | null
-  img2_mark: number | null
-  conclusion_mark: number | null
-  station_score: number | null
+  field_id: string
+  field_type: 'score' | 'text'
+  value_num: number | null
+  value_text: string | null
   marked_at: string
 }
 
-interface ResolvedMarkRow {
-  img1_mark: number
-  img2_mark: number
-  conclusion_mark: number | null
-  station_score: number
+interface ResolvedResponseRow {
+  field_id: string
+  value_num: number
   resolution_type: string
 }
 
 export async function exportResults(db: Database.Database, outputPath: string): Promise<void> {
+  const profileId = getActiveProfileId(db)
+  const modules = getProfileModules(db, profileId)
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'Ultrasound Marker'
   workbook.created = new Date()
 
-  // Create Summary sheet first so it appears as the first tab
   const summary = workbook.addWorksheet('Summary')
+  summary.properties.defaultColWidth = 20
+  const summaryHeader = summary.addRow([
+    'Student ID',
+    'Full Name',
+    'Module',
+    'Total Score',
+    'Max Score',
+    'Percentage'
+  ])
+  summaryHeader.font = { bold: true }
+  summaryHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } }
 
-  const summaryRows: {
-    student_id: string
-    full_name: string
-    module: string
-    total_score: number | null
-    practical_pct: number | null
-    result: string
-  }[] = []
-
-  for (const mod of stationsConfig.modules) {
+  for (const mod of modules) {
     const students = db
-      .prepare('SELECT student_id, full_name, module_code FROM students WHERE module_code=? ORDER BY full_name')
-      .all(mod.code) as StudentResult[]
+      .prepare(
+        `SELECT ps.student_id, ps.full_name
+         FROM profile_students ps
+         JOIN student_enrollments se
+          ON se.profile_id = ps.profile_id AND se.student_id = ps.student_id
+         WHERE ps.profile_id = ? AND se.module_code = ?
+         ORDER BY ps.full_name`
+      )
+      .all(profileId, mod.code) as StudentResult[]
 
     if (students.length === 0) continue
 
     const sheet = workbook.addWorksheet(mod.code)
     sheet.properties.defaultColWidth = 14
 
-    // ── Build column headers ───────────────────────────────────────────────
     const headers: string[] = ['Student ID', 'Full Name']
-
-    for (const st of mod.stations) {
-      const s = st.number
-      headers.push(`S${s} IMG1 (E1)`)
-      headers.push(`S${s} IMG2 (E1)`)
-      if (st.has_conclusion) headers.push(`S${s} Conclusion (E1)`)
-      headers.push(`S${s} IMG1 (E2)`)
-      headers.push(`S${s} IMG2 (E2)`)
-      if (st.has_conclusion) headers.push(`S${s} Conclusion (E2)`)
-      headers.push(`S${s} Agreement`)
-      headers.push(`S${s} Final IMG1`)
-      headers.push(`S${s} Final IMG2`)
-      if (st.has_conclusion) headers.push(`S${s} Final Conclusion`)
-      headers.push(`S${s} Score`)
-      headers.push(`S${s} Resolution`)
-      headers.push(`S${s} E1 Name`)
-      headers.push(`S${s} E2 Name`)
+    for (const station of mod.stations) {
+      for (const field of station.form_fields) {
+        if (field.field_type === 'score') {
+          headers.push(`S${station.station_number} ${field.label} (E1)`)
+          headers.push(`S${station.station_number} ${field.label} (E2)`)
+          headers.push(`S${station.station_number} ${field.label} Final`)
+        } else {
+          headers.push(`S${station.station_number} ${field.label} (E1)`)
+          headers.push(`S${station.station_number} ${field.label} (E2)`)
+        }
+      }
+      headers.push(`S${station.station_number} Agreement`)
+      headers.push(`S${station.station_number} Score`)
+      headers.push(`S${station.station_number} Max`)
+      headers.push(`S${station.station_number} %`)
+      headers.push(`S${station.station_number} E1 Name`)
+      headers.push(`S${station.station_number} E2 Name`)
     }
-
-    headers.push('Total Practical Score')
-    headers.push('Practical %')
-    headers.push('Practical Result')
+    headers.push('Total Score')
+    headers.push('Max Score')
+    headers.push('Percentage')
     headers.push('Examiners')
 
     const headerRow = sheet.addRow(headers)
     headerRow.font = { bold: true }
     headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } }
 
-    // ── Populate student rows ──────────────────────────────────────────────
     for (const student of students) {
       const row: (string | number | null)[] = [student.student_id, student.full_name]
-      let totalScore: number | null = 0
-      let allResolved = true
       const examinerNames = new Set<string>()
+      let totalScore = 0
+      let totalMax = 0
+      let incomplete = false
 
-      for (const st of mod.stations) {
-        const marks = db
+      for (const station of mod.stations) {
+        const responseRows = db
           .prepare(
-            `SELECT examiner_name, img1_mark, img2_mark, conclusion_mark, station_score, marked_at
-             FROM examiner_marks
-             WHERE student_id=? AND module_code=? AND station_number=?
-             ORDER BY marked_at ASC`
+            `SELECT examiner_name, field_id, field_type, value_num, value_text, marked_at
+             FROM examiner_form_responses
+             WHERE profile_id = ? AND student_id = ? AND module_code = ? AND station_number = ?
+             ORDER BY marked_at ASC, examiner_name, field_id`
           )
-          .all(student.student_id, mod.code, st.number) as ExaminerMarkRow[]
+          .all(profileId, student.student_id, mod.code, station.station_number) as ExaminerResponseRow[]
 
-        const resolved = db
+        const resolvedRows = db
           .prepare(
-            `SELECT img1_mark, img2_mark, conclusion_mark, station_score, resolution_type
-             FROM resolved_marks
-             WHERE student_id=? AND module_code=? AND station_number=?`
+            `SELECT field_id, value_num, resolution_type
+             FROM resolved_form_responses
+             WHERE profile_id = ? AND student_id = ? AND module_code = ? AND station_number = ?`
           )
-          .get(student.student_id, mod.code, st.number) as ResolvedMarkRow | undefined
+          .all(profileId, student.student_id, mod.code, station.station_number) as ResolvedResponseRow[]
 
-        const e1 = marks[0] ?? null
-        const e2 = marks[1] ?? null
+        const examinerOrder = [...new Set(responseRows.map((r) => r.examiner_name))]
+        const e1 = examinerOrder[0] ?? null
+        const e2 = examinerOrder[1] ?? null
+        if (e1) examinerNames.add(e1)
+        if (e2) examinerNames.add(e2)
 
-        if (e1) examinerNames.add(e1.examiner_name)
-        if (e2) examinerNames.add(e2.examiner_name)
+        const responseValue = (examiner: string | null, fieldId: string): string | number | null => {
+          if (!examiner) return null
+          const r = responseRows.find((row) => row.examiner_name === examiner && row.field_id === fieldId)
+          return r?.field_type === 'score' ? r.value_num : r?.value_text ?? null
+        }
+        const finalValue = (fieldId: string): number | null =>
+          resolvedRows.find((resolved) => resolved.field_id === fieldId)?.value_num ?? null
 
-        // E1 marks
-        row.push(e1?.img1_mark ?? null)
-        row.push(e1?.img2_mark ?? null)
-        if (st.has_conclusion) row.push(e1?.conclusion_mark ?? null)
-
-        // E2 marks
-        row.push(e2?.img1_mark ?? null)
-        row.push(e2?.img2_mark ?? null)
-        if (st.has_conclusion) row.push(e2?.conclusion_mark ?? null)
-
-        // Agreement
-        if (!resolved) {
-          row.push('INCOMPLETE')
-          allResolved = false
-        } else {
-          row.push(resolved.resolution_type === 'agreed' ? 'AGREE' : 'DISAGREE')
+        let stationScore = 0
+        let stationMax = 0
+        let stationIncomplete = false
+        for (const field of station.form_fields) {
+          if (field.field_type === 'score') {
+            const final = finalValue(field.field_id)
+            row.push(responseValue(e1, field.field_id) as number | null)
+            row.push(responseValue(e2, field.field_id) as number | null)
+            row.push(final)
+            stationMax += field.max_score ?? 0
+            if (final === null) stationIncomplete = true
+            else stationScore += final
+          } else {
+            row.push(responseValue(e1, field.field_id) as string | null)
+            row.push(responseValue(e2, field.field_id) as string | null)
+          }
         }
 
-        // Final marks
-        row.push(resolved?.img1_mark ?? null)
-        row.push(resolved?.img2_mark ?? null)
-        if (st.has_conclusion) row.push(resolved?.conclusion_mark ?? null)
-        row.push(resolved?.station_score ?? null)
-        row.push(
-          !resolved
-            ? 'incomplete'
-            : resolved.resolution_type === 'agreed'
-            ? 'agreed'
-            : 'resolved'
-        )
-        row.push(e1?.examiner_name ?? null)
-        row.push(e2?.examiner_name ?? null)
+        const resolutionType = resolvedRows[0]?.resolution_type ?? null
+        row.push(stationIncomplete ? 'INCOMPLETE' : resolutionType === 'agreed' ? 'AGREE' : 'RESOLVED')
+        row.push(stationIncomplete ? null : stationScore)
+        row.push(stationMax)
+        row.push(!stationIncomplete && stationMax > 0 ? Math.round((stationScore / stationMax) * 1000) / 10 : null)
+        row.push(e1)
+        row.push(e2)
 
-        if (resolved) {
-          totalScore = (totalScore ?? 0) + resolved.station_score
-        } else {
-          totalScore = null
-          allResolved = false
-        }
+        totalMax += stationMax
+        if (stationIncomplete) incomplete = true
+        else totalScore += stationScore
       }
 
-      const practicalPct =
-        totalScore !== null ? Math.round((totalScore / 8) * 100 * 10) / 10 : null
-
-      let result: string
-      if (!allResolved) {
-        result = 'INCOMPLETE'
-      } else if (practicalPct !== null && practicalPct >= 50) {
-        result = 'PASS'
-      } else {
-        result = 'FAIL'
-      }
-
-      row.push(totalScore ?? null)
-      row.push(practicalPct ?? null)
-      row.push(result)
+      const pct = !incomplete && totalMax > 0 ? Math.round((totalScore / totalMax) * 1000) / 10 : null
+      row.push(incomplete ? null : totalScore)
+      row.push(totalMax)
+      row.push(pct)
       row.push([...examinerNames].join(', '))
+      sheet.addRow(row)
 
-      const dataRow = sheet.addRow(row)
-
-      // Highlight PASS/FAIL
-      const resultColIdx = headers.indexOf('Practical Result') + 1
-      const resultCell = dataRow.getCell(resultColIdx)
-      if (result === 'PASS') {
-        resultCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } }
-      } else if (result === 'FAIL') {
-        resultCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } }
-        resultCell.font = { color: { argb: 'FFFFFFFF' } }
-      }
-
-      summaryRows.push({
-        student_id: student.student_id,
-        full_name: student.full_name,
-        module: mod.code,
-        total_score: totalScore,
-        practical_pct: practicalPct,
-        result
-      })
+      summary.addRow([
+        student.student_id,
+        student.full_name,
+        mod.code,
+        incomplete ? null : totalScore,
+        totalMax,
+        pct
+      ])
     }
 
-    // Freeze header row
     sheet.views = [{ state: 'frozen', ySplit: 1 }]
   }
 
-  // ── Summary sheet (already created above) ─────────────────────────────────
-  summary.properties.defaultColWidth = 20
-  const sumHeader = summary.addRow([
-    'Student ID', 'Full Name', 'Module',
-    'Total Practical Score', 'Practical %', 'Practical Result'
-  ])
-  sumHeader.font = { bold: true }
-  sumHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } }
-
-  for (const r of summaryRows) {
-    const row = summary.addRow([
-      r.student_id, r.full_name, r.module,
-      r.total_score, r.practical_pct, r.result
-    ])
-    const resultCell = row.getCell(6)
-    if (r.result === 'PASS') {
-      resultCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } }
-    } else if (r.result === 'FAIL') {
-      resultCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } }
-      resultCell.font = { color: { argb: 'FFFFFFFF' } }
-    }
-  }
-
   summary.views = [{ state: 'frozen', ySplit: 1 }]
-
   await workbook.xlsx.writeFile(outputPath)
 }

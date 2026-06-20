@@ -1,17 +1,9 @@
 import { create } from 'zustand'
-import type { ModuleProgress } from '../types/ipc'
+import type { ModuleProgress, StationFormField } from '../types/ipc'
 
 export type AppScreen = 'login' | 'setup' | 'dashboard' | 'studentList' | 'marking' | 'resolution' | 'admin'
 
-export const EXAMINERS = ['Ian Stell', 'Giles Cattermole', 'George Nada'] as const
-export type ExaminerName = (typeof EXAMINERS)[number]
-
-/** Modules each examiner is assigned to mark. null means all modules. */
-export const EXAMINER_MODULES: Record<ExaminerName, string[] | null> = {
-  'Ian Stell': null,
-  'Giles Cattermole': ['HD', 'AS', 'LM'],
-  'George Nada': ['FC', 'NB', 'PR']
-}
+export type ExaminerName = string
 
 interface MarkingContext {
   module_code: string
@@ -20,6 +12,7 @@ interface MarkingContext {
   has_conclusion: boolean
   conclusion_reference_text: string | null
   candidate_instructions: string | null
+  form_fields: StationFormField[]
 }
 
 interface AppState {

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
 import CandidateInstructionsPanel from '../components/CandidateInstructionsPanel'
-import type { ExaminerMarkDetail, DisagreementRow } from '../types/ipc'
+import type { DicomStudyLink, ExaminerFormMarkDetail, FieldResponseInput, DisagreementRow, StationFormField } from '../types/ipc'
 
 type MarkValue = number | null
 
@@ -12,13 +12,11 @@ export default function ResolutionPage(): React.JSX.Element {
 
   const [disagreements, setDisagreements] = useState<DisagreementRow[]>([])
   const [selectedIdx, setSelectedIdx] = useState(0)
-  const [marks, setMarks] = useState<ExaminerMarkDetail[]>([])
+  const [marks, setMarks] = useState<ExaminerFormMarkDetail[]>([])
   const [loading, setLoading] = useState(true)
 
   // Consensus inputs
-  const [consImg1, setConsImg1] = useState<MarkValue>(null)
-  const [consImg2, setConsImg2] = useState<MarkValue>(null)
-  const [consConclusion, setConsConclusion] = useState<MarkValue>(null)
+  const [consensusScores, setConsensusScores] = useState<Record<string, number | null>>({})
   const [validationError, setValidationError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -27,6 +25,9 @@ export default function ResolutionPage(): React.JSX.Element {
   const [img1Data, setImg1Data] = useState<string | null>(null)
   const [img2Data, setImg2Data] = useState<string | null>(null)
   const [refImg1Data, setRefImg1Data] = useState<string | null>(null)
+  const [dicomLinks, setDicomLinks] = useState<DicomStudyLink[]>([])
+
+  const scoreFields = (ctx.form_fields ?? []).filter((field) => field.field_type === 'score')
 
   useEffect(() => {
     loadDisagreements()
@@ -44,25 +45,27 @@ export default function ResolutionPage(): React.JSX.Element {
   }
 
   async function loadStudentData(student: DisagreementRow): Promise<void> {
-    setConsImg1(null)
-    setConsImg2(null)
-    setConsConclusion(null)
+    setConsensusScores({})
     setValidationError(null)
     setImg1Data(null)
     setImg2Data(null)
     setRefImg1Data(null)
+    setDicomLinks([])
 
-    const [examinerMarks, studentImgs, refImgs] = await Promise.all([
+    const [examinerMarks, studentImgs, refImgs, links] = await Promise.all([
       window.api.getExaminerMarks(student.student_id, ctx.module_code, ctx.station_number),
       window.api.getStudentImages(student.student_id, ctx.module_code, ctx.station_number),
-      window.api.getReferenceImages(ctx.module_code, ctx.station_number)
+      window.api.getReferenceImages(ctx.module_code, ctx.station_number),
+      window.api.getDicomLinksForStation(student.student_id, ctx.module_code, ctx.station_number)
     ])
     setMarks(examinerMarks)
+    setDicomLinks(links)
 
-    // Load image data
+    // Load local image data only when no linked DICOM study exists.
+    const hasDicomStudy = links.length > 0
     const [d1, d2, r1] = await Promise.all([
-      studentImgs.img1Path ? window.api.readImageFile(studentImgs.img1Path) : Promise.resolve(null),
-      studentImgs.img2Path ? window.api.readImageFile(studentImgs.img2Path) : Promise.resolve(null),
+      !hasDicomStudy && studentImgs.img1Path ? window.api.readImageFile(studentImgs.img1Path) : Promise.resolve(null),
+      !hasDicomStudy && studentImgs.img2Path ? window.api.readImageFile(studentImgs.img2Path) : Promise.resolve(null),
       refImgs.img1Path ? window.api.readImageFile(refImgs.img1Path) : Promise.resolve(null)
     ])
     setImg1Data(d1)
@@ -76,13 +79,11 @@ export default function ResolutionPage(): React.JSX.Element {
   }
 
   function validate(): boolean {
-    if (consImg1 === null || consImg2 === null) {
-      setValidationError('Please set consensus marks for Image 1 and Image 2.')
-      return false
-    }
-    if (ctx.has_conclusion && consConclusion === null) {
-      setValidationError('Please set the Conclusion consensus mark.')
-      return false
+    for (const field of scoreFields) {
+      if (field.required && (consensusScores[field.field_id] === null || consensusScores[field.field_id] === undefined)) {
+        setValidationError(`Please set consensus score for ${field.label}.`)
+        return false
+      }
     }
     return true
   }
@@ -91,15 +92,17 @@ export default function ResolutionPage(): React.JSX.Element {
     if (!validate()) return
     const student = disagreements[selectedIdx]
     setSaving(true)
-    await window.api.saveConsensus(
+    const responses: FieldResponseInput[] = scoreFields.map((field) => ({
+      field_id: field.field_id,
+      field_type: 'score',
+      value_num: consensusScores[field.field_id] ?? null
+    }))
+    await window.api.saveDynamicConsensus(
       student.student_id,
       ctx.module_code,
       ctx.station_number,
       examinerName!,
-      consImg1!,
-      consImg2!,
-      ctx.has_conclusion ? consConclusion : null,
-      ctx.has_conclusion
+      responses
     )
     setSaving(false)
 
@@ -119,17 +122,26 @@ export default function ResolutionPage(): React.JSX.Element {
   const e1 = marks[0] ?? null
   const e2 = marks[1] ?? null
 
-  const img1Differs = e1 && e2 && e1.img1_mark !== e2.img1_mark
-  const img2Differs = e1 && e2 && e1.img2_mark !== e2.img2_mark
-  const conclusionDiffers = ctx.has_conclusion && e1 && e2 && e1.conclusion_mark !== e2.conclusion_mark
+  function responseValue(mark: ExaminerFormMarkDetail | null, fieldId: string): number | null {
+    const response = mark?.responses.find((r) => r.field_id === fieldId)
+    return response?.value_num ?? null
+  }
+
+  function differs(field: StationFormField): boolean {
+    const v1 = responseValue(e1, field.field_id)
+    const v2 = responseValue(e2, field.field_id)
+    if (v1 === null || v2 === null) return true
+    return Math.abs(v1 - v2) > field.tolerance
+  }
 
   function computedScore(): number | null {
-    if (consImg1 === null || consImg2 === null) return null
-    if (ctx.has_conclusion && consConclusion === null) return null
-    if (ctx.has_conclusion) {
-      return Math.round(((consImg1 + consImg2 + consConclusion!) / 3) * 2 * 100) / 100
+    let total = 0
+    for (const field of scoreFields) {
+      const value = consensusScores[field.field_id]
+      if (field.required && (value === null || value === undefined)) return null
+      if (value !== null && value !== undefined) total += value
     }
-    return consImg1 + consImg2
+    return total
   }
 
   if (loading) {
@@ -158,6 +170,7 @@ export default function ResolutionPage(): React.JSX.Element {
 
   const currentStudent = disagreements[selectedIdx]
   const score = computedScore()
+  const activeDicomLink = dicomLinks[0] ?? null
 
   return (
     <Shell ctx={ctx} onBack={() => setScreen('dashboard')}>
@@ -208,26 +221,15 @@ export default function ResolutionPage(): React.JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                <MarkRow
-                  label="Image 1"
-                  v1={e1?.img1_mark ?? null}
-                  v2={e2?.img1_mark ?? null}
-                  differs={!!img1Differs}
-                />
-                <MarkRow
-                  label="Image 2"
-                  v1={e1?.img2_mark ?? null}
-                  v2={e2?.img2_mark ?? null}
-                  differs={!!img2Differs}
-                />
-                {ctx.has_conclusion && (
+                {scoreFields.map((field) => (
                   <MarkRow
-                    label="Conclusion"
-                    v1={e1?.conclusion_mark ?? null}
-                    v2={e2?.conclusion_mark ?? null}
-                    differs={!!conclusionDiffers}
+                    key={field.field_id}
+                    label={field.label}
+                    v1={responseValue(e1, field.field_id)}
+                    v2={responseValue(e2, field.field_id)}
+                    differs={differs(field)}
                   />
-                )}
+                ))}
               </tbody>
             </table>
 
@@ -237,15 +239,20 @@ export default function ResolutionPage(): React.JSX.Element {
                 Consensus — enter agreed marks (fields do not pre-fill):
               </p>
               <div className="flex gap-4 flex-wrap items-end">
-                <ConsensusDropdown label="Image 1" value={consImg1} onChange={setConsImg1} />
-                <ConsensusDropdown label="Image 2" value={consImg2} onChange={setConsImg2} />
-                {ctx.has_conclusion && (
-                  <ConsensusDropdown label="Conclusion" value={consConclusion} onChange={setConsConclusion} />
-                )}
+                {scoreFields.map((field) => (
+                  <ConsensusDropdown
+                    key={field.field_id}
+                    field={field}
+                    value={consensusScores[field.field_id] ?? null}
+                    onChange={(value) => setConsensusScores((prev) => ({ ...prev, [field.field_id]: value }))}
+                  />
+                ))}
                 {score !== null && (
                   <div className="ml-auto text-right">
                     <p className="text-xs text-slate-500 uppercase font-semibold">Computed Score</p>
-                    <p className="text-2xl font-bold text-slate-800">{score.toFixed(2)} / 20</p>
+                    <p className="text-2xl font-bold text-slate-800">
+                      {score.toFixed(2)} / {scoreFields.reduce((sum, field) => sum + (field.max_score ?? 0), 0)}
+                    </p>
                   </div>
                 )}
               </div>
@@ -286,20 +293,43 @@ export default function ResolutionPage(): React.JSX.Element {
               <span>{imagesOpen ? '▲ Collapse' : '▼ Expand'}</span>
             </button>
             {imagesOpen && (
-              <div className="flex gap-4 p-4">
-                <div className="flex-1 flex flex-col gap-1">
-                  <p className="text-xs text-slate-500 font-semibold uppercase">Student Image 1</p>
-                  <ImageViewer dataUrl={img1Data} label="Student IMG1" className="h-48 rounded-lg" />
+              activeDicomLink ? (
+                <div className="flex flex-col gap-3 p-4">
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-slate-500 font-semibold uppercase">Linked DICOM Study</p>
+                    <span className="text-xs text-slate-400 font-mono">{activeDicomLink.patient_id}</span>
+                    <div className="flex-1" />
+                    <button
+                      onClick={() => window.open(activeDicomLink.ohif_url, '_blank')}
+                      className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100"
+                    >
+                      Open OHIF
+                    </button>
+                  </div>
+                  <div className="h-[520px] rounded-lg overflow-hidden bg-slate-900 border border-slate-800">
+                    <iframe
+                      src={activeDicomLink.ohif_url}
+                      title={`OHIF ${activeDicomLink.patient_id}`}
+                      className="w-full h-full border-0 bg-slate-900"
+                    />
+                  </div>
                 </div>
-                <div className="flex-1 flex flex-col gap-1">
-                  <p className="text-xs text-slate-500 font-semibold uppercase">Student Image 2</p>
-                  <ImageViewer dataUrl={img2Data} label="Student IMG2" className="h-48 rounded-lg" />
+              ) : (
+                <div className="flex gap-4 p-4">
+                  <div className="flex-1 flex flex-col gap-1">
+                    <p className="text-xs text-slate-500 font-semibold uppercase">Student Image 1</p>
+                    <ImageViewer dataUrl={img1Data} label="Student IMG1" className="h-48 rounded-lg" />
+                  </div>
+                  <div className="flex-1 flex flex-col gap-1">
+                    <p className="text-xs text-slate-500 font-semibold uppercase">Student Image 2</p>
+                    <ImageViewer dataUrl={img2Data} label="Student IMG2" className="h-48 rounded-lg" />
+                  </div>
+                  <div className="flex-1 flex flex-col gap-1">
+                    <p className="text-xs text-slate-500 font-semibold uppercase">Reference Image 1</p>
+                    <ImageViewer dataUrl={refImg1Data} label="Ref IMG1" className="h-48 rounded-lg" />
+                  </div>
                 </div>
-                <div className="flex-1 flex flex-col gap-1">
-                  <p className="text-xs text-slate-500 font-semibold uppercase">Reference Image 1</p>
-                  <ImageViewer dataUrl={refImg1Data} label="Ref IMG1" className="h-48 rounded-lg" />
-                </div>
-              </div>
+              )
             )}
           </div>
         </div>
@@ -340,17 +370,18 @@ function MarkRow({
 }
 
 function ConsensusDropdown({
-  label,
+  field,
   value,
   onChange
 }: {
-  label: string
+  field: StationFormField
   value: MarkValue
   onChange: (v: MarkValue) => void
 }): React.JSX.Element {
+  const max = field.max_score ?? 0
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</label>
+      <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{field.label}</label>
       <select
         value={value === null ? '' : String(value)}
         onChange={(e) => {
@@ -360,7 +391,7 @@ function ConsensusDropdown({
         className="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
       >
         <option value="">— Select —</option>
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+        {Array.from({ length: max + 1 }, (_, n) => n).map((n) => (
           <option key={n} value={n}>{n}</option>
         ))}
       </select>

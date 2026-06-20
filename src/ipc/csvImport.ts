@@ -1,9 +1,7 @@
 import { readFileSync } from 'fs'
 import type Database from 'better-sqlite3'
-import { upsertStudent } from '../db/queries'
+import { resolveModuleAlias, upsertStudent } from '../db/queries'
 import type { CsvImportResult } from '../types/ipc'
-
-const KNOWN_MODULE_CODES = new Set(['AS', 'FC', 'NB', 'HD', 'LM', 'PR'])
 
 export function importCsv(db: Database.Database, filePath: string): CsvImportResult {
   const raw = readFileSync(filePath, 'utf-8')
@@ -71,23 +69,25 @@ export function importCsv(db: Database.Database, filePath: string): CsvImportRes
 
     // Process module_code_1
     if (module_code_1) {
-      if (!KNOWN_MODULE_CODES.has(module_code_1)) {
+      const resolvedModule1 = resolveModuleAlias(db, module_code_1)
+      if (!resolvedModule1) {
         // Unknown module code — out of scope, skip silently (not an error per user instruction)
         skipped++
-      } else if (isExcluded(student_id, module_code_1)) {
+      } else if (isExcluded(student_id, resolvedModule1)) {
         skipped++
       } else {
-        upsertStudent(db, student_id, full_name, module_code_1)
+        upsertStudent(db, student_id, full_name, resolvedModule1)
         imported++
       }
     }
 
     // Process module_code_2 (optional)
     if (module_code_2) {
-      if (!KNOWN_MODULE_CODES.has(module_code_2)) {
+      const resolvedModule2 = resolveModuleAlias(db, module_code_2)
+      if (!resolvedModule2) {
         // Out-of-scope module, skip
-      } else if (!isExcluded(student_id, module_code_2)) {
-        upsertStudent(db, student_id, full_name, module_code_2)
+      } else if (!isExcluded(student_id, resolvedModule2)) {
+        upsertStudent(db, student_id, full_name, resolvedModule2)
         imported++
       }
     }

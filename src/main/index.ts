@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join, basename } from 'path'
 import { existsSync, copyFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'fs'
+import { autoUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import Database from 'better-sqlite3'
 import { initSchema } from '../db/schema'
 import {
@@ -16,7 +17,17 @@ import {
   getExaminerMarksForStation,
   getDisagreements,
   getStudentsByModule,
-  getStudentsWithState
+  getStudentsWithState,
+  getActiveProfileConfig,
+  getProfileModules,
+  listAssessmentProfiles,
+  createAssessmentProfile,
+  setActiveAssessmentProfile,
+  getStationDefinition,
+  saveExaminerFormResponses,
+  getExaminerFormMarksForStation,
+  saveDynamicConsensus,
+  resolveModuleAlias
 } from '../db/queries'
 import { importCsv } from '../ipc/csvImport'
 import { runFileSort, runFindConclusions } from '../ipc/fileSorter'
@@ -24,11 +35,162 @@ import { runImageAudit } from '../ipc/imageAudit'
 import { exportMarks, importMarks } from '../ipc/marksSync'
 import { getStudentImages, getReferenceImages, readFileAsBase64 } from '../ipc/imageHandler'
 import { exportResults } from '../ipc/export'
-import stationsConfig from '../../config/stations.json'
-import type { ModuleProgress } from '../types/ipc'
+import {
+  exportProfilePackage,
+  importProfilePackage,
+  saveProfileConfig,
+  setAdminPin,
+  verifyAdminPin
+} from '../ipc/profilePackages'
+import {
+  getDicomLinksForStation,
+  getDicomServerConfig,
+  getDicomStudyPreview,
+  getDicomStudyPreviews,
+  getRecentDicomUnresolved,
+  saveDicomServerConfig,
+  syncDicomStudies,
+  testOrthancConnection,
+  uploadDicomFolderToOrthanc
+} from '../ipc/dicom'
+import type { AppUpdateStatus, DicomServerConfig, ModuleProgress } from '../types/ipc'
 
 // Ensure consistent userData path between dev and prod (both use productName)
 app.setName('Ultrasound Marker')
+
+// ── App updates ─────────────────────────────────────────────────────────────
+
+let updaterConfigured = false
+let updateCheckPromise: Promise<AppUpdateStatus> | null = null
+let updateCheckSource: AppUpdateStatus['source'] = 'automatic'
+let updateStatus: AppUpdateStatus = {
+  status: 'idle',
+  source: 'automatic',
+  currentVersion: app.getVersion()
+}
+
+function updateStatusPatch(status: AppUpdateStatus['status'], patch: Partial<AppUpdateStatus> = {}): AppUpdateStatus {
+  updateStatus = {
+    ...updateStatus,
+    ...patch,
+    status,
+    currentVersion: app.getVersion()
+  }
+  BrowserWindow.getAllWindows().forEach((window) => {
+    window.webContents.send('updates:status', updateStatus)
+  })
+  return updateStatus
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function setupAutoUpdater(): void {
+  if (updaterConfigured) return
+  updaterConfigured = true
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => {
+    updateStatusPatch('checking', { source: updateCheckSource, message: 'Checking for updates...' })
+  })
+
+  autoUpdater.on('update-available', (info: UpdateInfo) => {
+    updateStatusPatch('available', {
+      source: updateCheckSource,
+      availableVersion: info.version,
+      percent: undefined,
+      message: `Version ${info.version} is available.`
+    })
+  })
+
+  autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+    updateStatusPatch('downloading', {
+      source: updateCheckSource,
+      percent: progress.percent,
+      message: `Downloading update ${Math.round(progress.percent)}%`
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+    updateStatusPatch('downloaded', {
+      source: updateCheckSource,
+      availableVersion: info.version,
+      percent: 100,
+      checkedAt: new Date().toISOString(),
+      message: `Version ${info.version} is ready to install.`
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    updateStatusPatch('not-available', {
+      source: updateCheckSource,
+      availableVersion: undefined,
+      percent: undefined,
+      checkedAt: new Date().toISOString(),
+      message: 'You are on the latest version.'
+    })
+  })
+
+  autoUpdater.on('error', (error: Error) => {
+    updateStatusPatch('error', {
+      source: updateCheckSource,
+      percent: undefined,
+      checkedAt: new Date().toISOString(),
+      message: getErrorMessage(error)
+    })
+  })
+}
+
+async function checkForAppUpdates(source: AppUpdateStatus['source'] = 'automatic'): Promise<AppUpdateStatus> {
+  if (!app.isPackaged) {
+    return updateStatusPatch('unsupported', {
+      source,
+      message: 'Updates are available in packaged builds only.'
+    })
+  }
+
+  setupAutoUpdater()
+  updateCheckSource = source
+
+  if (updateStatus.status === 'downloaded') {
+    return updateStatus
+  }
+
+  if (updateCheckPromise) {
+    return updateCheckPromise
+  }
+
+  updateCheckPromise = autoUpdater
+    .checkForUpdates()
+    .then(() => updateStatus)
+    .catch((error: unknown) =>
+      updateStatusPatch('error', {
+        source,
+        percent: undefined,
+        checkedAt: new Date().toISOString(),
+        message: getErrorMessage(error)
+      })
+    )
+    .finally(() => {
+      updateCheckPromise = null
+    })
+
+  return updateCheckPromise
+}
+
+function installAppUpdate(): { success: boolean; error?: string } {
+  if (updateStatus.status !== 'downloaded') {
+    return { success: false, error: 'No downloaded update is ready to install.' }
+  }
+
+  setImmediate(() => {
+    autoUpdater.quitAndInstall()
+  })
+  return { success: true }
+}
 
 // ── Database singleton ───────────────────────────────────────────────────────
 
@@ -154,7 +316,18 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.ultrasoundmarker')
   }
   registerIpcHandlers()
+  setupAutoUpdater()
   createWindow()
+  if (app.isPackaged) {
+    setTimeout(() => {
+      void checkForAppUpdates()
+    }, 3000)
+  } else {
+    updateStatusPatch('unsupported', {
+      source: 'automatic',
+      message: 'Updates are available in packaged builds only.'
+    })
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -167,6 +340,20 @@ app.on('window-all-closed', () => {
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
 
 function registerIpcHandlers(): void {
+
+  // ── App updates ───────────────────────────────────────────────────────────
+
+  ipcMain.handle('updates:getStatus', () => {
+    return updateStatus
+  })
+
+  ipcMain.handle('updates:check', () => {
+    return checkForAppUpdates('manual')
+  })
+
+  ipcMain.handle('updates:install', () => {
+    return installAppUpdate()
+  })
 
   // ── Setup / Config ─────────────────────────────────────────────────────────
 
@@ -195,7 +382,14 @@ function registerIpcHandlers(): void {
   // Auto-load on startup: reads config.json, opens DB, returns config to renderer
   ipcMain.handle('setup:autoLoad', () => {
     const cfg = readPersistedConfig()
-    if (!cfg) return { configured: false }
+    if (!cfg) {
+      try {
+        initDb()
+        return { configured: false }
+      } catch (err) {
+        return { configured: false, error: String(err) }
+      }
+    }
     try {
       initDb()
       return { configured: true, config: cfg }
@@ -232,6 +426,60 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // ── Assessment Profiles ──────────────────────────────────────────────────
+
+  ipcMain.handle('profiles:getActiveConfig', () => {
+    if (!db) return null
+    return getActiveProfileConfig(getDb())
+  })
+
+  ipcMain.handle('profiles:list', () => {
+    return listAssessmentProfiles(getDb())
+  })
+
+  ipcMain.handle('profiles:create', (_e, name: string) => {
+    return createAssessmentProfile(getDb(), name)
+  })
+
+  ipcMain.handle('profiles:setActive', (_e, profileId: string) => {
+    setActiveAssessmentProfile(getDb(), profileId)
+  })
+
+  ipcMain.handle('profiles:getStation', (_e, moduleCode: string, stationNumber: number) => {
+    return getStationDefinition(getDb(), moduleCode, stationNumber)
+  })
+
+  ipcMain.handle('profiles:saveConfig', (_e, cfg) => {
+    return saveProfileConfig(getDb(), cfg)
+  })
+
+  ipcMain.handle('profiles:setAdminPin', (_e, profileId: string, pin: string) => {
+    setAdminPin(getDb(), profileId, pin)
+  })
+
+  ipcMain.handle('profiles:verifyAdminPin', (_e, profileId: string, pin: string) => {
+    return verifyAdminPin(getDb(), profileId, pin)
+  })
+
+  ipcMain.handle('profiles:exportPackage', async () => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: `assessment-settings-${new Date().toISOString().slice(0, 10)}.umprofile`,
+      filters: [{ name: 'Assessment Profile', extensions: ['umprofile'] }]
+    })
+    if (result.canceled || !result.filePath) return { success: false }
+    await exportProfilePackage(getDb(), result.filePath)
+    return { success: true, path: result.filePath }
+  })
+
+  ipcMain.handle('profiles:importPackage', async (_e, forceReplace: boolean) => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Assessment Profile', extensions: ['umprofile'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return { success: false }
+    return importProfilePackage(getDb(), result.filePaths[0], app.getPath('userData'), forceReplace)
+  })
+
   // ── CSV Import ─────────────────────────────────────────────────────────────
 
   ipcMain.handle('csv:import', (_e, filePath: string) => {
@@ -246,8 +494,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('filesorter:findConclusions', (_e, assessmentRoot: string, targetRoot: string) => {
     const conclusionStations: Record<string, number[]> = {}
-    for (const mod of stationsConfig.modules) {
-      const stations = mod.stations.filter((s) => s.has_conclusion).map((s) => s.number)
+    for (const mod of getProfileModules(getDb())) {
+      const stations = mod.stations
+        .filter((s) => s.form_fields.some((field) => field.field_id.toUpperCase().includes('CONCLUSION')))
+        .map((s) => s.station_number)
       if (stations.length > 0) conclusionStations[mod.code] = stations
     }
     return runFindConclusions(getDb(), assessmentRoot, targetRoot, conclusionStations)
@@ -267,13 +517,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('dashboard:progress', (_e, examiner_name: string) => {
     const database = getDb()
-    const progress: ModuleProgress[] = stationsConfig.modules.map((mod) => {
+    const progress: ModuleProgress[] = getProfileModules(database).map((mod) => {
       const students = getStudentsByModule(database, mod.code)
       const stations = mod.stations.map((st) => {
-        const p = getStationProgress(database, mod.code, st.number, examiner_name)
+        const p = getStationProgress(database, mod.code, st.station_number, examiner_name)
         return {
-          station_number: st.number,
+          station_number: st.station_number,
           label: st.label,
+          candidate_instructions: st.candidate_instructions,
+          form_fields: st.form_fields,
           marked_by_me: p.marked_by_me,
           resolved: p.resolved,
           total: p.total,
@@ -335,6 +587,13 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'marking:saveFormMark',
+    (_e, student_id: string, module_code: string, station_number: number, examiner_name: string, responses) => {
+      saveExaminerFormResponses(getDb(), student_id, module_code, station_number, examiner_name, responses)
+    }
+  )
+
+  ipcMain.handle(
     'marking:getState',
     (_e, student_id: string, module_code: string, station_number: number) => {
       return getMarkingState(getDb(), student_id, module_code, station_number)
@@ -350,7 +609,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     'resolution:getMarks',
     (_e, student_id: string, module_code: string, station_number: number) => {
-      return getExaminerMarksForStation(getDb(), student_id, module_code, station_number)
+      return getExaminerFormMarksForStation(getDb(), student_id, module_code, station_number)
     }
   )
 
@@ -371,6 +630,13 @@ function registerIpcHandlers(): void {
         getDb(), student_id, module_code, station_number,
         examiner_name, img1_mark, img2_mark, conclusion_mark, has_conclusion
       )
+    }
+  )
+
+  ipcMain.handle(
+    'resolution:saveDynamicConsensus',
+    (_e, student_id: string, module_code: string, station_number: number, examiner_name: string, responses) => {
+      saveDynamicConsensus(getDb(), student_id, module_code, station_number, examiner_name, responses)
     }
   )
 
@@ -419,6 +685,10 @@ function registerIpcHandlers(): void {
     db.prepare('DELETE FROM resolved_marks').run()
     db.prepare('DELETE FROM marking_state').run()
     db.prepare('DELETE FROM marking_locks').run()
+    db.prepare('DELETE FROM examiner_form_responses').run()
+    db.prepare('DELETE FROM resolved_form_responses').run()
+    db.prepare('DELETE FROM profile_marking_state').run()
+    db.prepare('DELETE FROM profile_marking_locks').run()
   })
 
   // ── File Sort Log ──────────────────────────────────────────────────────────
@@ -451,7 +721,7 @@ function registerIpcHandlers(): void {
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (result.canceled || !result.filePaths[0]) return null
-    return importMarks(getDb(), result.filePaths[0], stationsConfig.modules)
+    return importMarks(getDb(), result.filePaths[0])
   })
 
   // ── Admin ──────────────────────────────────────────────────────────────────
@@ -459,7 +729,60 @@ function registerIpcHandlers(): void {
   ipcMain.handle('admin:auditImages', () => {
     const targetRoot = db ? getConfig(db, 'target_root') : null
     if (!targetRoot) return []
-    return runImageAudit(getDb(), targetRoot, stationsConfig.modules)
+    return runImageAudit(
+      getDb(),
+      targetRoot,
+      getProfileModules(getDb()).map((m) => ({
+        code: m.code,
+        stations: m.stations.map((s) => ({
+          number: s.station_number,
+          has_conclusion: s.form_fields.some((field) => field.field_id.toUpperCase().includes('CONCLUSION'))
+        }))
+      }))
+    )
+  })
+
+  // ── DICOM / Orthanc ────────────────────────────────────────────────────────
+
+  ipcMain.handle('dicom:getConfig', () => {
+    if (!db) return null
+    return getDicomServerConfig(db)
+  })
+
+  ipcMain.handle('dicom:saveConfig', (_e, cfg: DicomServerConfig) => {
+    return saveDicomServerConfig(getDb(), cfg)
+  })
+
+  ipcMain.handle('dicom:testConnection', async (_e, cfg: DicomServerConfig) => {
+    return testOrthancConnection(cfg)
+  })
+
+  ipcMain.handle('dicom:sync', async (_e, cfg: DicomServerConfig) => {
+    return syncDicomStudies(getDb(), cfg)
+  })
+
+  ipcMain.handle('dicom:uploadFolder', async (_e, cfg: DicomServerConfig, folderPath: string) => {
+    saveDicomServerConfig(getDb(), cfg)
+    return uploadDicomFolderToOrthanc(cfg, folderPath)
+  })
+
+  ipcMain.handle(
+    'dicom:getLinksForStation',
+    (_e, student_id: string, module_code: string, station_number: number) => {
+      return getDicomLinksForStation(getDb(), student_id, module_code, station_number)
+    }
+  )
+
+  ipcMain.handle('dicom:getStudyPreview', (_e, orthanc_study_id: string) => {
+    return getDicomStudyPreview(getDb(), orthanc_study_id)
+  })
+
+  ipcMain.handle('dicom:getStudyPreviews', (_e, orthanc_study_id: string, limit?: number) => {
+    return getDicomStudyPreviews(getDb(), orthanc_study_id, limit ?? 2)
+  })
+
+  ipcMain.handle('dicom:getUnresolved', (_e, limit?: number) => {
+    return getRecentDicomUnresolved(getDb(), limit ?? 100)
   })
 
   ipcMain.handle(

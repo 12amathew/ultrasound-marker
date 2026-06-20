@@ -1,10 +1,9 @@
 import { readdirSync, statSync, existsSync, mkdirSync, copyFileSync } from 'fs'
 import { join, extname, basename, dirname, resolve } from 'path'
 import type Database from 'better-sqlite3'
-import { getStudentByShortId, getStudentByShortIdAnyModule, getStudentsByModule } from '../db/queries'
+import { getStudentByShortId, getStudentByShortIdAnyModule, resolveModuleAlias } from '../db/queries'
 import type { FileSortResult } from '../types/ipc'
 
-const KNOWN_MODULE_CODES = new Set(['AS', 'FC', 'NB', 'HD', 'LM', 'PR'])
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.jpg', '.jpeg', '.png'])
 const CONCLUSION_EXTS = new Set(['.pdf', '.jpg', '.jpeg', '.tif', '.tiff'])
 
@@ -29,7 +28,6 @@ function parseFolderName(name: string): ParsedFolder | null {
   const m = FOLDER_PATTERN.exec(s)
   if (!m) return null
   const moduleCode = m[2]
-  if (!KNOWN_MODULE_CODES.has(moduleCode)) return null
   return {
     stationNumber: parseInt(m[1], 10),
     moduleCode,
@@ -50,7 +48,6 @@ function parseFileNameForStudent(filename: string): ParsedFolder | null {
   const m = /^(?:P\d+)?S(\d)([A-Z]{2})(\d{6})/.exec(s)
   if (!m) return null
   const moduleCode = m[2]
-  if (!KNOWN_MODULE_CODES.has(moduleCode)) return null
   return {
     stationNumber: parseInt(m[1], 10),
     moduleCode,
@@ -137,6 +134,14 @@ function processFolder(
 
   const { stationNumber, shortId } = parsed
   let { moduleCode } = parsed
+  const resolvedModuleCode = resolveModuleAlias(db, moduleCode)
+  if (!resolvedModuleCode) {
+    const reason = `Module code or alias "${moduleCode}" is not configured`
+    result.unresolved.push({ source: folderPath, reason })
+    logEntry(db, runAt, folderPath, null, 'unresolved', reason)
+    return
+  }
+  moduleCode = resolvedModuleCode
 
   // Lookup student by short ID + module code from folder name
   let student = getStudentByShortId(db, shortId, moduleCode)
@@ -269,7 +274,15 @@ function recurse(
       const parsed = parseFileNameForStudent(entry)
       if (!parsed) continue
 
-      const key = `${parsed.stationNumber}|${parsed.moduleCode}|${parsed.shortId}`
+    const resolvedModuleCode = resolveModuleAlias(db, parsed.moduleCode)
+    if (!resolvedModuleCode) {
+      const reason = `Module code or alias "${parsed.moduleCode}" is not configured`
+      result.unresolved.push({ source: fullPath, reason })
+      logEntry(db, runAt, fullPath, null, 'unresolved', reason)
+      continue
+    }
+    parsed.moduleCode = resolvedModuleCode
+    const key = `${parsed.stationNumber}|${parsed.moduleCode}|${parsed.shortId}`
       if (!fileGroups.has(key)) {
         fileGroups.set(key, { parsed, images: [], conclusions: [] })
       }
