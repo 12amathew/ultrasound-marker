@@ -7,26 +7,43 @@ import StudentListPage from './pages/StudentListPage'
 import MarkingPage from './pages/MarkingPage'
 import ResolutionPage from './pages/ResolutionPage'
 import AdminPage from './pages/AdminPage'
+import UpdateStatus from './components/UpdateStatus'
 
 export default function App(): React.JSX.Element {
   const screen = useAppStore((s) => s.screen)
 
+  let page: React.JSX.Element
+
   switch (screen) {
     case 'login':
-      return <LoginPage />
+      page = <LoginPage />
+      break
     case 'setup':
-      return <SetupPage />
+      page = <SetupPage />
+      break
     case 'dashboard':
-      return <DashboardPage />
+      page = <DashboardPage />
+      break
     case 'studentList':
-      return <StudentListPage />
+      page = <StudentListPage />
+      break
     case 'marking':
-      return <MarkingPage />
+      page = <MarkingPage />
+      break
     case 'resolution':
-      return <ResolutionPage />
+      page = <ResolutionPage />
+      break
     case 'admin':
-      return <AdminPage />
+      page = <AdminPage />
+      break
     default:
-      return <LoginPage />
+      page = <LoginPage />
   }
+
+  return (
+    <>
+      {page}
+      <UpdateStatus />
+    </>
+  )
 }

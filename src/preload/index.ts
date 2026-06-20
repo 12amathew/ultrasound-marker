@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AppUpdateStatus } from '../types/ipc'
 
 // Typed IPC bridge — renderer calls window.api.xxx(args)
 const api = {
@@ -15,6 +16,29 @@ const api = {
     ipcRenderer.invoke('setup:getConfig'),
   saveAppConfig: (cfg: { target_root: string; reference_images_root: string; source_path?: string }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('setup:saveConfig', cfg),
+
+  // Updates
+  getUpdateStatus: (): Promise<AppUpdateStatus> => ipcRenderer.invoke('updates:getStatus'),
+  checkForUpdates: (): Promise<AppUpdateStatus> => ipcRenderer.invoke('updates:check'),
+  installUpdate: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('updates:install'),
+  onUpdateStatus: (callback: (status: AppUpdateStatus) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus): void => callback(status)
+    ipcRenderer.on('updates:status', listener)
+    return () => ipcRenderer.removeListener('updates:status', listener)
+  },
+
+  // Assessment profiles
+  getActiveProfileConfig: () => ipcRenderer.invoke('profiles:getActiveConfig'),
+  listProfiles: () => ipcRenderer.invoke('profiles:list'),
+  createProfile: (name: string) => ipcRenderer.invoke('profiles:create', name),
+  setActiveProfile: (profileId: string) => ipcRenderer.invoke('profiles:setActive', profileId),
+  getStationDefinition: (moduleCode: string, stationNumber: number) =>
+    ipcRenderer.invoke('profiles:getStation', moduleCode, stationNumber),
+  saveProfileConfig: (cfg: unknown) => ipcRenderer.invoke('profiles:saveConfig', cfg),
+  setAdminPin: (profileId: string, pin: string) => ipcRenderer.invoke('profiles:setAdminPin', profileId, pin),
+  verifyAdminPin: (profileId: string, pin: string) => ipcRenderer.invoke('profiles:verifyAdminPin', profileId, pin),
+  exportProfilePackage: () => ipcRenderer.invoke('profiles:exportPackage'),
+  importProfilePackage: (forceReplace: boolean) => ipcRenderer.invoke('profiles:importPackage', forceReplace),
 
   // CSV
   importCsv: (filePath: string) => ipcRenderer.invoke('csv:import', filePath),
@@ -70,6 +94,23 @@ const api = {
       examiner_name, img1_mark, img2_mark, conclusion_mark, has_conclusion
     ),
 
+  saveFormMark: (
+    student_id: string,
+    module_code: string,
+    station_number: number,
+    examiner_name: string,
+    responses: Array<{
+      field_id: string
+      field_type: 'score' | 'text'
+      value_num?: number | null
+      value_text?: string | null
+    }>
+  ) =>
+    ipcRenderer.invoke(
+      'marking:saveFormMark',
+      student_id, module_code, station_number, examiner_name, responses
+    ),
+
   getMarkingState: (student_id: string, module_code: string, station_number: number) =>
     ipcRenderer.invoke('marking:getState', student_id, module_code, station_number),
 
@@ -94,6 +135,24 @@ const api = {
       'resolution:saveConsensus',
       student_id, module_code, station_number,
       examiner_name, img1_mark, img2_mark, conclusion_mark, has_conclusion
+    ),
+
+  saveDynamicConsensus: (
+    student_id: string,
+    module_code: string,
+    station_number: number,
+    examiner_name: string,
+    responses: Array<{
+      field_id: string
+      field_type: 'score' | 'text'
+      value_num?: number | null
+      value_text?: string | null
+    }>
+  ) =>
+    ipcRenderer.invoke(
+      'resolution:saveDynamicConsensus',
+      student_id, module_code, station_number,
+      examiner_name, responses
     ),
 
   // Images
@@ -124,7 +183,28 @@ const api = {
     module_code: string,
     station_number: number,
     slot: 'img1' | 'img2' | 'conclusion'
-  ) => ipcRenderer.invoke('admin:copyFileToStation', srcPath, student_id, module_code, station_number, slot)
+  ) => ipcRenderer.invoke('admin:copyFileToStation', srcPath, student_id, module_code, station_number, slot),
+
+  // DICOM / Orthanc
+  getDicomConfig: () => ipcRenderer.invoke('dicom:getConfig'),
+  saveDicomConfig: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:saveConfig', cfg),
+  testDicomConnection: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:testConnection', cfg),
+  uploadDicomFolder: (cfg: { orthanc_base_url: string; ohif_base_url: string }, folderPath: string) =>
+    ipcRenderer.invoke('dicom:uploadFolder', cfg, folderPath),
+  syncDicomStudies: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:sync', cfg),
+  getDicomLinksForStation: (
+    student_id: string,
+    module_code: string,
+    station_number: number
+  ) => ipcRenderer.invoke('dicom:getLinksForStation', student_id, module_code, station_number),
+  getDicomStudyPreview: (orthanc_study_id: string) =>
+    ipcRenderer.invoke('dicom:getStudyPreview', orthanc_study_id),
+  getDicomStudyPreviews: (orthanc_study_id: string, limit?: number) =>
+    ipcRenderer.invoke('dicom:getStudyPreviews', orthanc_study_id, limit),
+  getDicomUnresolved: (limit?: number) => ipcRenderer.invoke('dicom:getUnresolved', limit)
 }
 
 if (process.contextIsolated) {

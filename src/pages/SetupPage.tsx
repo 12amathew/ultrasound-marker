@@ -273,10 +273,8 @@ export default function SetupPage(): React.JSX.Element {
               Everything is configured. You can now begin marking.
             </p>
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-              <strong>Reminder:</strong> Before marking begins, open{' '}
-              <code className="bg-amber-100 px-1 rounded">config/stations.json</code> and replace the
-              placeholder text in <code className="bg-amber-100 px-1 rounded">conclusion_reference_text</code>{' '}
-              for AS Station 8, FC Station 4, and PR Station 4.
+              <strong>Reminder:</strong> Before marking begins, open Admin and confirm the active
+              assessment profile, station forms, candidate instructions, students, and examiner assignments.
             </div>
             <button
               onClick={() => setScreen('login')}

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
 import CandidateInstructionsPanel from '../components/CandidateInstructionsPanel'
+import type { DicomStudyLink, DicomStudyPreview, FieldResponseInput, StationFormField } from '../types/ipc'
 
 type MarkValue = number | null
 
@@ -49,26 +50,31 @@ export default function MarkingPage(): React.JSX.Element {
   const [refImg1Data, setRefImg1Data] = useState<string | null>(null)
   const [refImg2Data, setRefImg2Data] = useState<string | null>(null)
   const [conclusionData, setConclusionData] = useState<string | null>(null)
+  const [dicomLinks, setDicomLinks] = useState<DicomStudyLink[]>([])
+  const [dicomPreviews, setDicomPreviews] = useState<DicomStudyPreview[]>([])
+  const [dicomPreviewError, setDicomPreviewError] = useState<string | null>(null)
   const [imagesLoading, setImagesLoading] = useState(false)
 
   const [showingStudentImg, setShowingStudentImg] = useState<1 | 2>(1)
   const [showingRefImg, setShowingRefImg] = useState<1 | 2>(1)
   const [conclusionOpen, setConclusionOpen] = useState(false)
 
-  const [img1Mark, setImg1Mark] = useState<MarkValue>(null)
-  const [img2Mark, setImg2Mark] = useState<MarkValue>(null)
-  const [conclusionMark, setConclusionMark] = useState<MarkValue>(null)
+  const [scoreValues, setScoreValues] = useState<Record<string, number | null>>({})
+  const [textValues, setTextValues] = useState<Record<string, string>>({})
   const [validationError, setValidationError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  const formFields = ctx.form_fields ?? []
+  const scoreFields = formFields.filter((field) => field.field_type === 'score')
+  const textFields = formFields.filter((field) => field.field_type === 'text')
 
   // Ref to the currently displayed student — used in cleanup without stale closure
   const currentStudentRef = useRef<{ student_id: string; full_name: string } | null>(null)
 
   function resetForm(): void {
     setStudent(null)
-    setImg1Mark(null)
-    setImg2Mark(null)
-    setConclusionMark(null)
+    setScoreValues({})
+    setTextValues({})
     setValidationError(null)
     setShowingStudentImg(1)
     setShowingRefImg(1)
@@ -78,6 +84,9 @@ export default function MarkingPage(): React.JSX.Element {
     setRefImg1Data(null)
     setRefImg2Data(null)
     setConclusionData(null)
+    setDicomLinks([])
+    setDicomPreviews([])
+    setDicomPreviewError(null)
     setStudentImages({ img1Path: null, img2Path: null, conclusionPath: null })
     setRefImages({ img1Path: null, img2Path: null })
   }
@@ -90,9 +99,14 @@ export default function MarkingPage(): React.JSX.Element {
       const marks = await window.api.getExaminerMarks(s.student_id, c.module_code, c.station_number)
       const myMark = marks.find((m: { examiner_name: string }) => m.examiner_name === examiner)
       if (myMark) {
-        setImg1Mark(myMark.img1_mark)
-        setImg2Mark(myMark.img2_mark)
-        setConclusionMark(myMark.conclusion_mark)
+        const nextScores: Record<string, number | null> = {}
+        const nextText: Record<string, string> = {}
+        for (const response of myMark.responses ?? []) {
+          if (response.field_type === 'score') nextScores[response.field_id] = response.value_num ?? null
+          else nextText[response.field_id] = response.value_text ?? ''
+        }
+        setScoreValues(nextScores)
+        setTextValues(nextText)
       }
     } catch (err) {
       console.error('Failed to load existing marks:', err)
@@ -103,20 +117,27 @@ export default function MarkingPage(): React.JSX.Element {
     const c = ctxRef.current
     setImagesLoading(true)
     try {
-      const [imgs, refs] = await Promise.all([
+      const [imgs, refs, links] = await Promise.all([
         window.api.getStudentImages(s.student_id, c.module_code, c.station_number),
-        window.api.getReferenceImages(c.module_code, c.station_number)
+        window.api.getReferenceImages(c.module_code, c.station_number),
+        window.api.getDicomLinksForStation(s.student_id, c.module_code, c.station_number)
       ])
+      const hasDicomStudy = links.length > 0
+      const activeLink = links[0] ?? null
       setStudentImages(imgs)
       setRefImages(refs)
-      const reads = await Promise.allSettled([
-        imgs.img1Path ? window.api.readImageFile(imgs.img1Path) : Promise.resolve(null),
-        imgs.img2Path ? window.api.readImageFile(imgs.img2Path) : Promise.resolve(null),
-        refs.img1Path ? window.api.readImageFile(refs.img1Path) : Promise.resolve(null),
-        refs.img2Path ? window.api.readImageFile(refs.img2Path) : Promise.resolve(null),
-        imgs.conclusionPath && c.has_conclusion
-          ? window.api.readImageFile(imgs.conclusionPath)
-          : Promise.resolve(null)
+      setDicomLinks(links)
+      const [reads, previewResult] = await Promise.all([
+        Promise.allSettled([
+          !hasDicomStudy && imgs.img1Path ? window.api.readImageFile(imgs.img1Path) : Promise.resolve(null),
+          !hasDicomStudy && imgs.img2Path ? window.api.readImageFile(imgs.img2Path) : Promise.resolve(null),
+          refs.img1Path ? window.api.readImageFile(refs.img1Path) : Promise.resolve(null),
+          refs.img2Path ? window.api.readImageFile(refs.img2Path) : Promise.resolve(null),
+          imgs.conclusionPath && c.has_conclusion
+            ? window.api.readImageFile(imgs.conclusionPath)
+            : Promise.resolve(null)
+        ]),
+        activeLink ? window.api.getDicomStudyPreviews(activeLink.orthanc_study_id, 2) : Promise.resolve(null)
       ])
       const val = (r: PromiseSettledResult<string | null>): string | null =>
         r.status === 'fulfilled' ? r.value : null
@@ -125,6 +146,8 @@ export default function MarkingPage(): React.JSX.Element {
       setRefImg1Data(val(reads[2]))
       setRefImg2Data(val(reads[3]))
       setConclusionData(val(reads[4]))
+      setDicomPreviews(previewResult?.previews ?? [])
+      setDicomPreviewError(previewResult?.error ?? null)
     } catch (err) {
       console.error('Image loading failed:', err)
     } finally {
@@ -220,9 +243,16 @@ export default function MarkingPage(): React.JSX.Element {
   }
 
   function validate(): boolean {
-    if (img1Mark === null && img2Mark === null && conclusionMark === null) {
-      setValidationError('Please set at least one mark before saving.')
-      return false
+    for (const field of formFields) {
+      if (!field.required) continue
+      if (field.field_type === 'score' && (scoreValues[field.field_id] === null || scoreValues[field.field_id] === undefined)) {
+        setValidationError(`Please set a score for ${field.label}.`)
+        return false
+      }
+      if (field.field_type === 'text' && !textValues[field.field_id]?.trim()) {
+        setValidationError(`Please complete ${field.label}.`)
+        return false
+      }
     }
     return true
   }
@@ -230,15 +260,18 @@ export default function MarkingPage(): React.JSX.Element {
   async function handleSave(andNext: boolean): Promise<void> {
     if (!validate() || !student) return
     setSaving(true)
-    await window.api.saveMark(
+    const responses: FieldResponseInput[] = formFields.map((field) => ({
+      field_id: field.field_id,
+      field_type: field.field_type,
+      value_num: field.field_type === 'score' ? scoreValues[field.field_id] ?? null : null,
+      value_text: field.field_type === 'text' ? textValues[field.field_id] ?? '' : null
+    }))
+    await window.api.saveFormMark(
       student.student_id,
       ctx.module_code,
       ctx.station_number,
       examinerName!,
-      img1Mark,
-      img2Mark,
-      ctx.has_conclusion ? conclusionMark : null,
-      ctx.has_conclusion
+      responses
     )
     await releaseCurrent()
     setSaving(false)
@@ -256,6 +289,8 @@ export default function MarkingPage(): React.JSX.Element {
 
   const currentStudentData = showingStudentImg === 1 ? studentImg1Data : studentImg2Data
   const currentRefData = showingRefImg === 1 ? refImg1Data : refImg2Data
+  const activeDicomLink = dicomLinks[0] ?? null
+  const currentDicomPreview = dicomPreviews[showingStudentImg - 1] ?? null
 
   if (loading) {
     return (
@@ -304,35 +339,95 @@ export default function MarkingPage(): React.JSX.Element {
       <div className="flex gap-4 flex-1 min-h-0">
         {/* Student image panel */}
         <div className="flex-1 flex flex-col gap-2">
-          <div className="flex items-center gap-1">
-            <span className="text-sm font-semibold text-slate-600 mr-2">Student Image</span>
-            <button
-              onClick={() => setShowingStudentImg(1)}
-              className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
-                showingStudentImg === 1
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              Image 1
-            </button>
-            <button
-              onClick={() => setShowingStudentImg(2)}
-              className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
-                showingStudentImg === 2
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              Image 2
-            </button>
-          </div>
-          <ImageViewer
-            dataUrl={currentStudentData}
-            label={`Student Image ${showingStudentImg}`}
-            className="flex-1 rounded-xl"
-            loading={imagesLoading}
-          />
+          {activeDicomLink ? (
+            <>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm font-semibold text-slate-600 mr-1">DICOM Study</span>
+                <span className="text-xs text-slate-400 font-mono truncate" title={activeDicomLink.patient_id}>
+                  {activeDicomLink.patient_id}
+                </span>
+                <button
+                  onClick={() => setShowingStudentImg(1)}
+                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
+                    showingStudentImg === 1
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Image 1
+                </button>
+                <button
+                  onClick={() => setShowingStudentImg(2)}
+                  disabled={dicomPreviews.length < 2}
+                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    showingStudentImg === 2
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Image 2
+                </button>
+                <div className="flex-1" />
+                <button
+                  onClick={() => window.open(activeDicomLink.ohif_url, '_blank')}
+                  className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100"
+                >
+                  Open OHIF
+                </button>
+              </div>
+              <ImageViewer
+                dataUrl={currentDicomPreview?.dataUrl ?? null}
+                label={`DICOM Image ${showingStudentImg}`}
+                className="flex-1 rounded-xl"
+                loading={imagesLoading}
+              />
+              {dicomPreviewError && (
+                <p className="text-xs text-amber-600">
+                  Preview unavailable: {dicomPreviewError}. Use Open OHIF for the full study.
+                </p>
+              )}
+              {dicomLinks.length > 1 && (
+                <p className="text-xs text-amber-600">
+                  Multiple DICOM studies are linked to this station. The newest link is shown.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1">
+                <span className="text-sm font-semibold text-slate-600 mr-2">Student Image</span>
+                <button
+                  onClick={() => setShowingStudentImg(1)}
+                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
+                    showingStudentImg === 1
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Image 1
+                </button>
+                <button
+                  onClick={() => setShowingStudentImg(2)}
+                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
+                    showingStudentImg === 2
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Image 2
+                </button>
+                {!imagesLoading && !studentImg1Data && !studentImg2Data && (
+                  <span className="ml-2 text-xs text-red-500 font-semibold">No linked DICOM study</span>
+                )}
+              </div>
+              <ImageViewer
+                dataUrl={currentStudentData}
+                label={`Student Image ${showingStudentImg}`}
+                className="flex-1 rounded-xl"
+                loading={imagesLoading}
+              />
+            </>
+          )}
         </div>
 
         {/* Reference image panel */}
@@ -398,45 +493,40 @@ export default function MarkingPage(): React.JSX.Element {
 
       {/* Mark entry */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col gap-3">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">
-          Scores — at least one required before saving
-        </p>
+        <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Station Form</p>
         <div className="flex flex-wrap gap-3 items-stretch">
-          <div className={`flex items-center gap-3 rounded-lg px-4 py-3 border-2 transition-colors ${
-            showingStudentImg === 1 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-slate-50'
-          }`}>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-bold text-slate-500 uppercase">Image 1</span>
-              <span className={`text-xs ${img1Mark !== null ? 'text-green-600 font-semibold' : 'text-amber-500'}`}>
-                {img1Mark !== null ? `Scored: ${img1Mark}` : 'Not yet scored'}
-              </span>
-            </div>
-            <MarkDropdown value={img1Mark} onChange={setImg1Mark} />
-          </div>
-
-          <div className={`flex items-center gap-3 rounded-lg px-4 py-3 border-2 transition-colors ${
-            showingStudentImg === 2 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-slate-50'
-          }`}>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-bold text-slate-500 uppercase">Image 2</span>
-              <span className={`text-xs ${img2Mark !== null ? 'text-green-600 font-semibold' : 'text-amber-500'}`}>
-                {img2Mark !== null ? `Scored: ${img2Mark}` : 'Not yet scored'}
-              </span>
-            </div>
-            <MarkDropdown value={img2Mark} onChange={setImg2Mark} />
-          </div>
-
-          {ctx.has_conclusion && (
-            <div className="flex items-center gap-3 rounded-lg px-4 py-3 border-2 border-slate-200 bg-slate-50">
+          {scoreFields.map((field) => (
+            <div
+              key={field.field_id}
+              className="flex items-center gap-3 rounded-lg px-4 py-3 border-2 border-slate-200 bg-slate-50"
+            >
               <div className="flex flex-col gap-1">
-                <span className="text-xs font-bold text-slate-500 uppercase">Conclusion</span>
-                <span className={`text-xs ${conclusionMark !== null ? 'text-green-600 font-semibold' : 'text-amber-500'}`}>
-                  {conclusionMark !== null ? `Scored: ${conclusionMark}` : 'Not yet scored'}
+                <span className="text-xs font-bold text-slate-500 uppercase">{field.label}</span>
+                <span className={`text-xs ${scoreValues[field.field_id] !== null && scoreValues[field.field_id] !== undefined ? 'text-green-600 font-semibold' : 'text-amber-500'}`}>
+                  {scoreValues[field.field_id] !== null && scoreValues[field.field_id] !== undefined
+                    ? `Scored: ${scoreValues[field.field_id]} / ${field.max_score ?? 0}`
+                    : field.required ? 'Required' : 'Optional'}
                 </span>
               </div>
-              <MarkDropdown value={conclusionMark} onChange={setConclusionMark} />
+              <MarkDropdown
+                field={field}
+                value={scoreValues[field.field_id] ?? null}
+                onChange={(value) => setScoreValues((prev) => ({ ...prev, [field.field_id]: value }))}
+              />
             </div>
-          )}
+          ))}
+
+          {textFields.map((field) => (
+            <label key={field.field_id} className="min-w-[260px] flex-1 flex flex-col gap-1 rounded-lg px-4 py-3 border-2 border-slate-200 bg-slate-50">
+              <span className="text-xs font-bold text-slate-500 uppercase">{field.label}</span>
+              <textarea
+                value={textValues[field.field_id] ?? ''}
+                onChange={(event) => setTextValues((prev) => ({ ...prev, [field.field_id]: event.target.value }))}
+                rows={3}
+                className="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </label>
+          ))}
 
           <div className="flex gap-3 ml-auto items-center">
             {validationError && (
@@ -512,12 +602,15 @@ function MarkingShell({
 }
 
 function MarkDropdown({
+  field,
   value,
   onChange
 }: {
+  field: StationFormField
   value: MarkValue
   onChange: (v: MarkValue) => void
 }): React.JSX.Element {
+  const max = field.max_score ?? 0
   return (
     <select
       value={value === null ? '' : String(value)}
@@ -528,7 +621,7 @@ function MarkDropdown({
       className="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <option value="">—</option>
-      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+      {Array.from({ length: max + 1 }, (_, n) => n).map((n) => (
         <option key={n} value={n}>{n}</option>
       ))}
     </select>

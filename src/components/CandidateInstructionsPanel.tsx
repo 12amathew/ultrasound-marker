@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import stationsConfig from '../../config/stations.json'
+import type { ProfileStation } from '../types/ipc'
 
 interface Props {
   moduleCode: string
@@ -11,28 +11,35 @@ function getLsKey(moduleCode: string, stationNumber: number): string {
 }
 
 export default function CandidateInstructionsPanel({ moduleCode, stationNumber }: Props): React.JSX.Element | null {
-  const mod = stationsConfig.modules.find((m) => m.code === moduleCode)
-  const stations = mod?.stations ?? []
-
+  const [stations, setStations] = useState<ProfileStation[]>([])
   const [selectedStation, setSelectedStation] = useState(stationNumber)
   const [savedStation, setSavedStation] = useState<number | null>(null)
   const [instructionsOpen, setInstructionsOpen] = useState(false)
+
+  useEffect(() => {
+    async function load(): Promise<void> {
+      const cfg = await window.api.getActiveProfileConfig()
+      const mod = cfg?.modules.find((m) => m.code === moduleCode)
+      setStations(mod?.stations ?? [])
+    }
+    load()
+  }, [moduleCode])
 
   // On mount, check localStorage for a saved override
   useEffect(() => {
     const stored = localStorage.getItem(getLsKey(moduleCode, stationNumber))
     if (stored !== null) {
       const num = parseInt(stored)
-      if (!isNaN(num) && stations.some((s) => s.number === num)) {
+      if (!isNaN(num) && stations.some((s) => s.station_number === num)) {
         setSelectedStation(num)
         setSavedStation(num)
       }
     }
-  }, [moduleCode, stationNumber])
+  }, [moduleCode, stationNumber, stations])
 
   if (stations.length === 0) return null
 
-  const activeStation = stations.find((s) => s.number === selectedStation)
+  const activeStation = stations.find((s) => s.station_number === selectedStation)
   const instructions = activeStation?.candidate_instructions ?? null
 
   const isOverridden = selectedStation !== stationNumber
@@ -70,8 +77,8 @@ export default function CandidateInstructionsPanel({ moduleCode, stationNumber }
               className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
             >
               {stations.map((s) => (
-                <option key={s.number} value={s.number}>
-                  Station {s.number} instructions{s.number === stationNumber ? ' (default)' : ''}
+                <option key={s.station_number} value={s.station_number}>
+                  Station {s.station_number} instructions{s.station_number === stationNumber ? ' (default)' : ''}
                 </option>
               ))}
             </select>

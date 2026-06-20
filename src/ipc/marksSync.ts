@@ -1,34 +1,51 @@
 import { writeFileSync, readFileSync } from 'fs'
 import type Database from 'better-sqlite3'
-import { importExaminerMark, getMarkingState } from '../db/queries'
-import type { ExportedMarks, ImportResult, ExportedMarkRow } from '../types/ipc'
+import {
+  getActiveProfileId,
+  getMarkingState,
+  saveExaminerFormResponses,
+  type FieldResponseInput
+} from '../db/queries'
+import type { ImportResult } from '../types/ipc'
 
-const FORMAT_VERSION = 1
+const FORMAT_VERSION = 2
 
-interface StationConfig {
-  number: number
-  has_conclusion: boolean
+interface ExportedResponseRow {
+  student_id: string
+  module_code: string
+  station_number: number
+  examiner_name: string
+  field_id: string
+  field_type: 'score' | 'text'
+  value_num: number | null
+  value_text: string | null
+  marked_at: string
 }
 
-interface ModuleConfig {
-  code: string
-  stations: StationConfig[]
+interface ExportedDynamicMarks {
+  format_version: number
+  profile_id: string
+  exported_at: string
+  responses: ExportedResponseRow[]
 }
 
 export function exportMarks(db: Database.Database, destPath: string): void {
-  const marks = db
+  const profileId = getActiveProfileId(db)
+  const responses = db
     .prepare(
-      `SELECT student_id, module_code, station_number, examiner_name,
-              img1_mark, img2_mark, conclusion_mark, station_score, marked_at
-       FROM examiner_marks
-       ORDER BY module_code, station_number, student_id`
+      `SELECT student_id, module_code, station_number, examiner_name, field_id,
+              field_type, value_num, value_text, marked_at
+       FROM examiner_form_responses
+       WHERE profile_id = ?
+       ORDER BY module_code, station_number, student_id, examiner_name, field_id`
     )
-    .all() as ExportedMarkRow[]
+    .all(profileId) as ExportedResponseRow[]
 
-  const payload: ExportedMarks = {
+  const payload: ExportedDynamicMarks = {
     format_version: FORMAT_VERSION,
+    profile_id: profileId,
     exported_at: new Date().toISOString(),
-    marks
+    responses
   }
 
   writeFileSync(destPath, JSON.stringify(payload, null, 2), 'utf-8')
@@ -36,8 +53,7 @@ export function exportMarks(db: Database.Database, destPath: string): void {
 
 export function importMarks(
   db: Database.Database,
-  srcPath: string,
-  modulesConfig: ModuleConfig[]
+  srcPath: string
 ): ImportResult {
   let raw: unknown
   try {
@@ -49,82 +65,83 @@ export function importMarks(
   if (
     typeof raw !== 'object' ||
     raw === null ||
-    (raw as ExportedMarks).format_version !== FORMAT_VERSION ||
-    !Array.isArray((raw as ExportedMarks).marks)
+    (raw as ExportedDynamicMarks).format_version !== FORMAT_VERSION ||
+    !Array.isArray((raw as ExportedDynamicMarks).responses)
   ) {
-    return { imported: 0, skipped: 0, agreements: 0, disagreements: 0, error: 'File does not appear to be a valid marks export.' }
+    return { imported: 0, skipped: 0, agreements: 0, disagreements: 0, error: 'File does not appear to be a valid dynamic marks export.' }
   }
 
-  const payload = raw as ExportedMarks
-
-  // Build a lookup for has_conclusion
-  const conclusionMap = new Map<string, boolean>()
-  for (const mod of modulesConfig) {
-    for (const st of mod.stations) {
-      conclusionMap.set(`${mod.code}|${st.number}`, st.has_conclusion)
+  const payload = raw as ExportedDynamicMarks
+  const profileId = getActiveProfileId(db)
+  if (payload.profile_id !== profileId) {
+    return {
+      imported: 0,
+      skipped: payload.responses.length,
+      agreements: 0,
+      disagreements: 0,
+      error: 'Marks export belongs to a different assessment profile.'
     }
   }
 
-  // Verify the student register matches — warn if any student IDs are unknown
   const knownStudents = new Set(
-    (db.prepare('SELECT student_id || \'|\' || module_code AS key FROM students').all() as { key: string }[])
+    (db.prepare('SELECT student_id || \'|\' || module_code AS key FROM student_enrollments WHERE profile_id = ?').all(profileId) as { key: string }[])
       .map((r) => r.key)
   )
 
-  let imported = 0
+  const groups = new Map<string, ExportedResponseRow[]>()
   let skipped = 0
-  let agreements = 0
-  let disagreements = 0
-  const unknownStudents = new Set<string>()
-
-  for (const mark of payload.marks) {
-    if (
-      typeof mark.student_id !== 'string' ||
-      typeof mark.module_code !== 'string' ||
-      typeof mark.station_number !== 'number' ||
-      typeof mark.examiner_name !== 'string'
-    ) {
+  for (const response of payload.responses) {
+    if (!knownStudents.has(`${response.student_id}|${response.module_code}`)) {
       skipped++
       continue
     }
-
-    // Skip if student not in this DB's register
-    if (!knownStudents.has(`${mark.student_id}|${mark.module_code}`)) {
-      unknownStudents.add(`${mark.student_id} (${mark.module_code})`)
-      skipped++
-      continue
-    }
-
-    const has_conclusion = conclusionMap.get(`${mark.module_code}|${mark.station_number}`) ?? false
-
-    const outcome = importExaminerMark(
-      db,
-      mark.student_id,
-      mark.module_code,
-      mark.station_number,
-      mark.examiner_name,
-      mark.img1_mark,
-      mark.img2_mark,
-      mark.conclusion_mark,
-      mark.station_score,
-      mark.marked_at,
-      has_conclusion
-    )
-
-    if (outcome === 'skipped') {
-      skipped++
-    } else {
-      imported++
-      const state = getMarkingState(db, mark.student_id, mark.module_code, mark.station_number)
-      if (state === 'AGREED') agreements++
-      else if (state === 'DISAGREEMENT') disagreements++
-    }
+    const key = [
+      response.student_id,
+      response.module_code,
+      response.station_number,
+      response.examiner_name
+    ].join('|')
+    groups.set(key, [...(groups.get(key) ?? []), response])
   }
 
-  const warning =
-    unknownStudents.size > 0
-      ? `${unknownStudents.size} student(s) in the import file were not found in this database and were skipped.`
-      : undefined
+  let imported = 0
+  let agreements = 0
+  let disagreements = 0
 
-  return { imported, skipped, agreements, disagreements, warning }
+  for (const rows of groups.values()) {
+    const first = rows[0]
+    const exists = db
+      .prepare(
+        `SELECT 1 FROM examiner_form_responses
+         WHERE profile_id = ? AND student_id = ? AND module_code = ?
+           AND station_number = ? AND examiner_name = ?
+         LIMIT 1`
+      )
+      .get(profileId, first.student_id, first.module_code, first.station_number, first.examiner_name)
+    if (exists) {
+      skipped += rows.length
+      continue
+    }
+
+    const responses: FieldResponseInput[] = rows.map((row) => ({
+      field_id: row.field_id,
+      field_type: row.field_type,
+      value_num: row.value_num,
+      value_text: row.value_text
+    }))
+    saveExaminerFormResponses(
+      db,
+      first.student_id,
+      first.module_code,
+      first.station_number,
+      first.examiner_name,
+      responses
+    )
+    imported += rows.length
+    const state = getMarkingState(db, first.student_id, first.module_code, first.station_number)
+    if (state === 'AGREED') agreements++
+    else if (state === 'DISAGREEMENT') disagreements++
+  }
+
+  return { imported, skipped, agreements, disagreements }
 }

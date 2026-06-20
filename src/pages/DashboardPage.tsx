@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { useAppStore, EXAMINER_MODULES, type ExaminerName } from '../store/appStore'
-import type { ModuleProgress, StationProgress } from '../types/ipc'
-import stationsConfig from '../../config/stations.json'
+import { useAppStore } from '../store/appStore'
+import type { ModuleProgress, ProfileConfig, StationProgress } from '../types/ipc'
 
 const REFRESH_INTERVAL_MS = 30_000
 
@@ -11,10 +10,18 @@ export default function DashboardPage(): React.JSX.Element {
 
   const [expandedModules, setExpandedModules] = useState<Set<string>>(new Set())
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
+  const [profileConfig, setProfileConfig] = useState<ProfileConfig | null>(null)
+  const [setupConfigured, setSetupConfigured] = useState(true)
 
   const refresh = useCallback(async () => {
-    const progress = await window.api.getDashboardProgress(examinerName ?? '')
+    const [progress, cfg, setup] = await Promise.all([
+      window.api.getDashboardProgress(examinerName ?? ''),
+      window.api.getActiveProfileConfig(),
+      window.api.getAppConfig()
+    ])
     setDashboardProgress(progress)
+    setProfileConfig(cfg)
+    setSetupConfigured(Boolean(setup?.target_root && setup?.reference_images_root))
     setLastRefresh(new Date())
   }, [setDashboardProgress, examinerName])
 
@@ -34,9 +41,10 @@ export default function DashboardPage(): React.JSX.Element {
     })
   }
 
-  function getStationConfig(moduleCode: string, stationNumber: number) {
-    const mod = stationsConfig.modules.find((m) => m.code === moduleCode)
-    return mod?.stations.find((s) => s.number === stationNumber) ?? null
+  function examinerCanSeeModule(moduleCode: string): boolean {
+    if (!examinerName) return true
+    const examiner = profileConfig?.examiners.find((e) => e.name === examinerName)
+    return !examiner?.module_codes || examiner.module_codes.includes(moduleCode)
   }
 
   return (
@@ -81,6 +89,21 @@ export default function DashboardPage(): React.JSX.Element {
       </header>
 
       <main className="p-6 max-w-5xl mx-auto flex flex-col gap-4">
+        {!setupConfigured && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-amber-800 text-sm flex items-center justify-between gap-4">
+            <span>
+              Image folders are not configured yet. You can review the assessment profile, but image audit,
+              sorting, reference images, and marking images need setup paths.
+            </span>
+            <button
+              onClick={() => setScreen('setup')}
+              className="px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800 font-semibold whitespace-nowrap"
+            >
+              Configure folders
+            </button>
+          </div>
+        )}
+
         {dashboardProgress.length === 0 && (
           <div className="text-center text-slate-500 mt-16">
             <p>Loading progress…</p>
@@ -88,11 +111,7 @@ export default function DashboardPage(): React.JSX.Element {
         )}
 
         {dashboardProgress
-          .filter((mod) => {
-            if (!examinerName) return true
-            const assigned = EXAMINER_MODULES[examinerName as ExaminerName]
-            return assigned === null || assigned.includes(mod.module_code)
-          })
+          .filter((mod) => examinerCanSeeModule(mod.module_code))
           .map((mod) => {
           const isExpanded = expandedModules.has(mod.module_code)
           const totalMarkedByMe = mod.stations.reduce((s, st) => s + (st.marked_by_me ?? 0), 0)
@@ -131,24 +150,22 @@ export default function DashboardPage(): React.JSX.Element {
               {isExpanded && (
                 <div className="border-t border-slate-100">
                   {mod.stations.map((st) => {
-                    const stConfig = getStationConfig(mod.module_code, st.station_number)
                     return (
                       <StationRow
                         key={st.station_number}
                         station={st}
                         moduleCode={mod.module_code}
                         moduleName={mod.module_name}
-                        hasConclusion={stConfig?.has_conclusion ?? false}
-                        conclusionReferenceText={stConfig?.conclusion_reference_text ?? null}
                         examinerName={examinerName!}
                         onMark={() =>
                           openStudentList({
                             module_code: mod.module_code,
                             module_name: mod.module_name,
                             station_number: st.station_number,
-                            has_conclusion: stConfig?.has_conclusion ?? false,
-                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null,
-                            candidate_instructions: stConfig?.candidate_instructions ?? null
+                            has_conclusion: st.form_fields?.some((field) => field.field_id.toUpperCase().includes('CONCLUSION')) ?? false,
+                            conclusion_reference_text: null,
+                            candidate_instructions: st.candidate_instructions ?? null,
+                            form_fields: st.form_fields ?? []
                           })
                         }
                         onResolve={() =>
@@ -156,9 +173,10 @@ export default function DashboardPage(): React.JSX.Element {
                             module_code: mod.module_code,
                             module_name: mod.module_name,
                             station_number: st.station_number,
-                            has_conclusion: stConfig?.has_conclusion ?? false,
-                            conclusion_reference_text: stConfig?.conclusion_reference_text ?? null,
-                            candidate_instructions: stConfig?.candidate_instructions ?? null
+                            has_conclusion: st.form_fields?.some((field) => field.field_id.toUpperCase().includes('CONCLUSION')) ?? false,
+                            conclusion_reference_text: null,
+                            candidate_instructions: st.candidate_instructions ?? null,
+                            form_fields: st.form_fields ?? []
                           })
                         }
                       />
@@ -178,8 +196,6 @@ function StationRow({
   station,
   moduleCode,
   moduleName,
-  hasConclusion,
-  conclusionReferenceText,
   examinerName,
   onMark,
   onResolve
@@ -187,15 +203,10 @@ function StationRow({
   station: StationProgress
   moduleCode: string
   moduleName: string
-  hasConclusion: boolean
-  conclusionReferenceText: string | null
   examinerName: string
   onMark: () => void
   onResolve: () => void
 }): React.JSX.Element {
-  const isPlaceholder =
-    conclusionReferenceText?.startsWith('PLACEHOLDER') ?? false
-
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-slate-50 last:border-0 hover:bg-slate-50">
       <div className="flex items-center gap-4">
@@ -206,11 +217,6 @@ function StationRow({
             {station.marked_by_me ?? 0}/{station.total} marked by you
             {station.awaiting_second > 0 && ` · ${station.awaiting_second} awaiting 2nd mark`}
           </p>
-          {hasConclusion && isPlaceholder && (
-            <p className="text-xs text-red-500 font-semibold">
-              ⚠ Conclusion reference text not configured
-            </p>
-          )}
         </div>
       </div>
 
