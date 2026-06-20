@@ -20,7 +20,7 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
-          - os: windows-latest
+          - os: windows-2022
             platform: win
 
     runs-on: ${{ matrix.os }}
