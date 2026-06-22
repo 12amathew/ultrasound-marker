@@ -14,6 +14,20 @@ export interface CsvImportResult {
   errors: { row: number; reason: string; data: string }[]
 }
 
+export interface CsvStudentPreviewRow {
+  row: number
+  student_id: string
+  full_name: string
+  module_codes: string[]
+  data: string
+}
+
+export interface CsvStudentPreviewResult {
+  rows: CsvStudentPreviewRow[]
+  skipped: number
+  errors: { row: number; reason: string; data: string }[]
+}
+
 export interface FileSortResult {
   processed: number
   placed: number
@@ -53,6 +67,7 @@ export interface StationFormField {
   field_id: string
   label: string
   field_type: 'score' | 'text'
+  min_score: number | null
   max_score: number | null
   tolerance: number
   required: boolean
@@ -179,6 +194,8 @@ export interface AuditEntry {
   img2: string | null
   conclusion: string | null
   requires_conclusion: boolean
+  dicom_links: DicomStudyLink[]
+  active_dicom_link: DicomStudyLink | null
 }
 
 export interface DicomServerConfig {
@@ -208,6 +225,9 @@ export interface DicomStudyLink {
   instance_count: number
   ohif_url: string
   imported_at: string
+  preview_count: number | null
+  preview_error: string | null
+  preview_checked_at: string | null
 }
 
 export interface DicomStudyPreview {
@@ -235,6 +255,32 @@ export interface DicomUnresolvedStudy {
   reason: string
   raw_metadata: string | null
   seen_at: string
+  preview_count?: number | null
+  preview_error?: string | null
+  preview_checked_at?: string | null
+}
+
+export interface DicomUnresolvedStudyDetails {
+  unresolved: DicomUnresolvedStudy
+  previews: DicomStudyPreview[]
+  error?: string
+  study_description: string | null
+  study_date: string | null
+  modality: string | null
+  series_count: number | null
+  instance_count: number | null
+}
+
+export interface DicomManualLinkResult {
+  success: boolean
+  link?: DicomStudyLink
+  error?: string
+}
+
+export interface DicomUnlinkResult {
+  success: boolean
+  restored_unresolved?: DicomUnresolvedStudy
+  error?: string
 }
 
 export interface DicomSyncResult {

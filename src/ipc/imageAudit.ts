@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'fs'
 import { join, extname } from 'path'
 import type Database from 'better-sqlite3'
-import type { AuditEntry } from '../types/ipc'
+import type { AuditEntry, DicomStudyLink } from '../types/ipc'
 
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.jpg', '.jpeg', '.png'])
 
@@ -29,6 +29,19 @@ export function runImageAudit(
   const moduleStationsMap = new Map<string, StationConfig[]>()
   for (const mod of modulesConfig) {
     moduleStationsMap.set(mod.code, mod.stations)
+  }
+
+  const dicomLinks = db.prepare(`
+    SELECT *
+    FROM dicom_study_links
+    ORDER BY imported_at DESC, id DESC
+  `).all() as DicomStudyLink[]
+  const dicomLinksByStation = new Map<string, DicomStudyLink[]>()
+  for (const link of dicomLinks) {
+    const key = `${link.student_id}|${link.module_code}|${link.station_number}`
+    const existing = dicomLinksByStation.get(key) ?? []
+    existing.push(link)
+    dicomLinksByStation.set(key, existing)
   }
 
   const entries: AuditEntry[] = []
@@ -88,7 +101,10 @@ export function runImageAudit(
         img1,
         img2,
         conclusion,
-        requires_conclusion: station.has_conclusion
+        requires_conclusion: station.has_conclusion,
+        dicom_links: dicomLinksByStation.get(`${student.student_id}|${student.module_code}|${station.number}`) ?? [],
+        active_dicom_link:
+          dicomLinksByStation.get(`${student.student_id}|${student.module_code}|${station.number}`)?.[0] ?? null
       })
     }
   }

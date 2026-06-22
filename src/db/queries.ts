@@ -17,6 +17,7 @@ export interface StationFormField {
   field_id: string
   label: string
   field_type: 'score' | 'text'
+  min_score: number | null
   max_score: number | null
   tolerance: number
   required: boolean
@@ -132,7 +133,7 @@ export function getProfileModules(db: Database.Database, profileId = getActivePr
 
   const fields = db
     .prepare(
-      `SELECT module_code, station_number, field_id, label, field_type, max_score, tolerance, required, sort_order
+      `SELECT module_code, station_number, field_id, label, field_type, min_score, max_score, tolerance, required, sort_order
        FROM station_form_fields
        WHERE profile_id = ?
        ORDER BY sort_order, id`
@@ -146,6 +147,7 @@ export function getProfileModules(db: Database.Database, profileId = getActivePr
         field_id: field.field_id,
         label: field.label,
         field_type: field.field_type,
+        min_score: field.min_score,
         max_score: field.max_score,
         tolerance: field.tolerance,
         required: Boolean(field.required),
@@ -857,7 +859,7 @@ export function getStationDefinition(
   if (!station) return null
   const fields = db
     .prepare(
-      `SELECT field_id, label, field_type, max_score, tolerance, required, sort_order
+      `SELECT field_id, label, field_type, min_score, max_score, tolerance, required, sort_order
        FROM station_form_fields
        WHERE profile_id = ? AND module_code = ? AND station_number = ?
        ORDER BY sort_order, id`
@@ -878,7 +880,7 @@ function getScoreFields(
   return (
     db
       .prepare(
-        `SELECT field_id, label, field_type, max_score, tolerance, required, sort_order
+        `SELECT field_id, label, field_type, min_score, max_score, tolerance, required, sort_order
          FROM station_form_fields
          WHERE profile_id = ? AND module_code = ? AND station_number = ? AND field_type = 'score'
          ORDER BY sort_order, id`
@@ -1036,8 +1038,10 @@ export function saveExaminerFormResponses(
       if (!field) continue
       if (field.field_type === 'score') {
         if (response.value_num === null || response.value_num === undefined) continue
-        if (response.value_num < 0 || response.value_num > (field.max_score ?? 0)) {
-          throw new Error(`${field.label} must be between 0 and ${field.max_score ?? 0}`)
+        const min = field.min_score ?? 0
+        const max = field.max_score ?? 0
+        if (response.value_num < min || response.value_num > max) {
+          throw new Error(`${field.label} must be between ${min} and ${max}`)
         }
         insert.run(
           profileId,

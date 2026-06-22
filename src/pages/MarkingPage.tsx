@@ -610,7 +610,9 @@ function MarkDropdown({
   value: MarkValue
   onChange: (v: MarkValue) => void
 }): React.JSX.Element {
+  const min = field.min_score ?? 0
   const max = field.max_score ?? 0
+  const count = Math.max(0, max - min + 1)
   return (
     <select
       value={value === null ? '' : String(value)}
@@ -621,7 +623,7 @@ function MarkDropdown({
       className="border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
     >
       <option value="">—</option>
-      {Array.from({ length: max + 1 }, (_, n) => n).map((n) => (
+      {Array.from({ length: count }, (_, n) => min + n).map((n) => (
         <option key={n} value={n}>{n}</option>
       ))}
     </select>

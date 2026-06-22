@@ -153,6 +153,7 @@ export function initSchema(db: Database.Database): void {
       field_id        TEXT NOT NULL,
       label           TEXT NOT NULL,
       field_type      TEXT NOT NULL CHECK(field_type IN ('score', 'text')),
+      min_score       INTEGER,
       max_score       INTEGER,
       tolerance       INTEGER NOT NULL DEFAULT 1,
       required        INTEGER NOT NULL DEFAULT 1,
@@ -312,6 +313,9 @@ export function initSchema(db: Database.Database): void {
       instance_count      INTEGER NOT NULL DEFAULT 0,
       ohif_url            TEXT NOT NULL,
       imported_at         TEXT NOT NULL,
+      preview_count       INTEGER,
+      preview_error       TEXT,
+      preview_checked_at  TEXT,
       UNIQUE(student_id, module_code, station_number, study_instance_uid)
     );
 
@@ -339,6 +343,30 @@ export function initSchema(db: Database.Database): void {
   // Migration: add source_path to setup_config if it doesn't exist yet
   try {
     db.exec(`ALTER TABLE setup_config ADD COLUMN source_path TEXT`)
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE station_form_fields ADD COLUMN min_score INTEGER`)
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE dicom_study_links ADD COLUMN preview_count INTEGER`)
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE dicom_study_links ADD COLUMN preview_error TEXT`)
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
+  try {
+    db.exec(`ALTER TABLE dicom_study_links ADD COLUMN preview_checked_at TEXT`)
   } catch {
     // Column already exists — safe to ignore
   }
@@ -380,8 +408,8 @@ function seedLegacyProfile(db: Database.Database): void {
     `)
     const insertField = db.prepare(`
       INSERT OR IGNORE INTO station_form_fields
-        (profile_id, module_code, station_number, field_id, label, field_type, max_score, tolerance, required, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (profile_id, module_code, station_number, field_id, label, field_type, min_score, max_score, tolerance, required, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     for (const [moduleIndex, mod] of stationsConfig.modules.entries()) {
@@ -398,8 +426,8 @@ function seedLegacyProfile(db: Database.Database): void {
           now,
           now
         )
-        insertField.run(activeProfile, mod.code, station.number, 'IMG1', 'Image 1', 'score', 10, 1, 1, 0, now, now)
-        insertField.run(activeProfile, mod.code, station.number, 'IMG2', 'Image 2', 'score', 10, 1, 1, 1, now, now)
+        insertField.run(activeProfile, mod.code, station.number, 'IMG1', 'Image 1', 'score', 0, 10, 1, 1, 0, now, now)
+        insertField.run(activeProfile, mod.code, station.number, 'IMG2', 'Image 2', 'score', 0, 10, 1, 1, 1, now, now)
         if (station.has_conclusion) {
           insertField.run(
             activeProfile,
@@ -408,7 +436,8 @@ function seedLegacyProfile(db: Database.Database): void {
             'CONCLUSION',
             'Conclusion',
             'score',
-            10,
+            0,
+            1,
             1,
             1,
             2,
@@ -423,6 +452,7 @@ function seedLegacyProfile(db: Database.Database): void {
               'CONCLUSION_NOTE',
               'Model answer',
               'text',
+              null,
               null,
               1,
               0,

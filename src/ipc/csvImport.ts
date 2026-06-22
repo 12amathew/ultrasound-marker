@@ -1,18 +1,43 @@
 import { readFileSync } from 'fs'
 import type Database from 'better-sqlite3'
 import { resolveModuleAlias, upsertStudent } from '../db/queries'
-import type { CsvImportResult } from '../types/ipc'
+import type { CsvImportResult, CsvStudentPreviewResult, CsvStudentPreviewRow } from '../types/ipc'
 
-export function importCsv(db: Database.Database, filePath: string): CsvImportResult {
+function parseCsvLine(line: string): string[] {
+  const cols: string[] = []
+  let current = ''
+  let quoted = false
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]
+    const next = line[i + 1]
+
+    if (char === '"' && quoted && next === '"') {
+      current += '"'
+      i++
+    } else if (char === '"') {
+      quoted = !quoted
+    } else if (char === ',' && !quoted) {
+      cols.push(current.trim())
+      current = ''
+    } else {
+      current += char
+    }
+  }
+
+  cols.push(current.trim())
+  return cols
+}
+
+export function previewStudentCsv(db: Database.Database, filePath: string): CsvStudentPreviewResult {
   const raw = readFileSync(filePath, 'utf-8')
   const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
-
   if (lines.length < 2) {
-    return { imported: 0, skipped: 0, errors: [{ row: 0, reason: 'File is empty or has no data rows', data: '' }] }
+    return { rows: [], skipped: 0, errors: [{ row: 0, reason: 'File is empty or has no data rows', data: '' }] }
   }
 
   // Parse header — case-insensitive column matching
-  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase())
+  const headers = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase())
   const col = (name: string): number => headers.indexOf(name)
 
   const iFullName = col('full_name')
@@ -22,7 +47,7 @@ export function importCsv(db: Database.Database, filePath: string): CsvImportRes
 
   if (iFullName === -1 || iStudentId === -1 || iModuleCode1 === -1) {
     return {
-      imported: 0,
+      rows: [],
       skipped: 0,
       errors: [{ row: 0, reason: 'Missing required columns: full_name, student_id, module_code_1', data: lines[0] }]
     }
@@ -36,16 +61,15 @@ export function importCsv(db: Database.Database, filePath: string): CsvImportRes
 
   const isExcluded = (sid: string, mod: string): boolean => excluded.has(`${sid}:${mod}`)
 
-  let imported = 0
   let skipped = 0
-  const errors: CsvImportResult['errors'] = []
+  const errors: CsvStudentPreviewResult['errors'] = []
+  const rows: CsvStudentPreviewRow[] = []
 
   for (let i = 1; i < lines.length; i++) {
     const rowNum = i + 1 // 1-based, including header
     const raw_line = lines[i]
 
-    // Split respecting basic CSV (no quoted fields with commas needed here)
-    const cols = raw_line.split(',').map((c) => c.trim())
+    const cols = parseCsvLine(raw_line)
 
     const full_name = cols[iFullName] ?? ''
     const student_id_raw = cols[iStudentId] ?? ''
@@ -67,31 +91,50 @@ export function importCsv(db: Database.Database, filePath: string): CsvImportRes
       continue
     }
 
-    // Process module_code_1
+    const moduleCodes: string[] = []
+
     if (module_code_1) {
       const resolvedModule1 = resolveModuleAlias(db, module_code_1)
-      if (!resolvedModule1) {
-        // Unknown module code — out of scope, skip silently (not an error per user instruction)
-        skipped++
-      } else if (isExcluded(student_id, resolvedModule1)) {
-        skipped++
-      } else {
-        upsertStudent(db, student_id, full_name, resolvedModule1)
-        imported++
+      if (resolvedModule1 && !isExcluded(student_id, resolvedModule1)) {
+        moduleCodes.push(resolvedModule1)
       }
     }
 
-    // Process module_code_2 (optional)
     if (module_code_2) {
       const resolvedModule2 = resolveModuleAlias(db, module_code_2)
-      if (!resolvedModule2) {
-        // Out-of-scope module, skip
-      } else if (!isExcluded(student_id, resolvedModule2)) {
-        upsertStudent(db, student_id, full_name, resolvedModule2)
-        imported++
+      if (resolvedModule2 && !isExcluded(student_id, resolvedModule2)) {
+        moduleCodes.push(resolvedModule2)
       }
+    }
+
+    const uniqueModuleCodes = [...new Set(moduleCodes)]
+    if (uniqueModuleCodes.length === 0) {
+      skipped++
+      continue
+    }
+
+    rows.push({
+      row: rowNum,
+      student_id,
+      full_name,
+      module_codes: uniqueModuleCodes,
+      data: raw_line
+    })
+  }
+
+  return { rows, skipped, errors }
+}
+
+export function importCsv(db: Database.Database, filePath: string): CsvImportResult {
+  const preview = previewStudentCsv(db, filePath)
+  let imported = 0
+
+  for (const row of preview.rows) {
+    for (const moduleCode of row.module_codes) {
+      upsertStudent(db, row.student_id, row.full_name, moduleCode)
+      imported++
     }
   }
 
-  return { imported, skipped, errors }
+  return { imported, skipped: preview.skipped, errors: preview.errors }
 }

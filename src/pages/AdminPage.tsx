@@ -1,9 +1,15 @@
 import React, { useState, useCallback } from 'react'
 import { useAppStore } from '../store/appStore'
+import ImageViewer from '../components/ImageViewer'
 import type {
   AuditEntry,
+  CsvStudentPreviewResult,
+  CsvStudentPreviewRow,
+  DicomStudyLink,
+  DicomStudyPreview,
   DicomSyncResult,
   DicomUnresolvedStudy,
+  DicomUnresolvedStudyDetails,
   DicomUploadResult,
   FileSortResult,
   ImportResult,
@@ -12,13 +18,25 @@ import type {
 } from '../types/ipc'
 
 type AdminTab = 'profile' | 'sort' | 'dicom' | 'audit' | 'sync' | 'reset'
+type ProfileModule = ProfileConfig['modules'][number]
+type ProfileStation = ProfileModule['stations'][number]
+type ProfileStudent = ProfileConfig['students'][number]
+
+type PendingStudentImport = {
+  result: CsvStudentPreviewResult
+  duplicateRowKeys: Set<number>
+  excludedRowKeys: Set<number>
+}
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 function entryStatus(e: AuditEntry): 'ok' | 'partial' | 'missing' {
-  const hasRequired = e.img1 && e.img2 && (!e.requires_conclusion || e.conclusion)
+  const hasCompleteDicomImages = (e.active_dicom_link?.preview_count ?? 0) >= 2
+  const hasCompleteLocalImages = Boolean(e.img1 && e.img2)
+  const hasImages = hasCompleteDicomImages || (!e.active_dicom_link && hasCompleteLocalImages)
+  const hasRequired = hasImages && (!e.requires_conclusion || e.conclusion)
   if (hasRequired) return 'ok'
-  if (e.img1 || e.img2) return 'partial'
+  if (e.active_dicom_link || e.img1 || e.img2 || e.conclusion) return 'partial'
   return 'missing'
 }
 
@@ -252,6 +270,9 @@ function AuditPanel(): React.JSX.Element {
   const [statusFilter, setStatusFilter] = useState<'all' | 'ok' | 'partial' | 'missing'>('all')
   const [linking, setLinking] = useState<{ entry: AuditEntry; slot: 'img1' | 'img2' | 'conclusion' } | null>(null)
   const [linkError, setLinkError] = useState<string | null>(null)
+  const [resolverEntry, setResolverEntry] = useState<AuditEntry | null>(null)
+  const [refreshingLinkId, setRefreshingLinkId] = useState<number | null>(null)
+  const [unlinkingLinkId, setUnlinkingLinkId] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -301,6 +322,43 @@ function AuditPanel(): React.JSX.Element {
     }
     setLinking(null)
     // Refresh audit to reflect change
+    await load()
+  }
+
+  async function handleRefreshDicom(link: DicomStudyLink): Promise<void> {
+    setLinkError(null)
+    setRefreshingLinkId(link.id)
+    try {
+      await window.api.refreshDicomLinkPreviewState(link.id)
+      await load()
+    } catch (err) {
+      setLinkError(`Failed to refresh DICOM preview state: ${String(err)}`)
+    } finally {
+      setRefreshingLinkId(null)
+    }
+  }
+
+  async function handleUnlinkDicom(link: DicomStudyLink): Promise<void> {
+    const restore = window.confirm(
+      'Restore this DICOM study to the unresolved candidate list after unlinking? Press Cancel to unlink and remove it from the resolver list.'
+    )
+    setLinkError(null)
+    setUnlinkingLinkId(link.id)
+    try {
+      const result = await window.api.unlinkDicomStudyLink(link.id, restore)
+      if (!result?.success) {
+        setLinkError(`Failed to unlink DICOM study: ${result?.error ?? 'Unknown error'}`)
+      }
+      await load()
+    } catch (err) {
+      setLinkError(`Failed to unlink DICOM study: ${String(err)}`)
+    } finally {
+      setUnlinkingLinkId(null)
+    }
+  }
+
+  async function handleDicomLinked(): Promise<void> {
+    setResolverEntry(null)
     await load()
   }
 
@@ -354,6 +412,7 @@ function AuditPanel(): React.JSX.Element {
                 <th className="px-4 py-3 text-left font-semibold">Module</th>
                 <th className="px-4 py-3 text-left font-semibold">Station</th>
                 <th className="px-4 py-3 text-left font-semibold">Status</th>
+                <th className="px-4 py-3 text-left font-semibold">DICOM</th>
                 <th className="px-4 py-3 text-left font-semibold">IMG 1</th>
                 <th className="px-4 py-3 text-left font-semibold">IMG 2</th>
                 <th className="px-4 py-3 text-left font-semibold">Conclusion</th>
@@ -374,6 +433,16 @@ function AuditPanel(): React.JSX.Element {
                     <td className="px-4 py-2.5 text-slate-600">Stn {e.station_number}</td>
                     <td className="px-4 py-2.5">
                       <StatusBadge status={st} />
+                    </td>
+                    <td className="px-4 py-2.5 min-w-[220px]">
+                      <DicomAuditCell
+                        entry={e}
+                        refreshing={refreshingLinkId === e.active_dicom_link?.id}
+                        unlinking={unlinkingLinkId === e.active_dicom_link?.id}
+                        onResolve={() => setResolverEntry(e)}
+                        onRefresh={handleRefreshDicom}
+                        onUnlink={handleUnlinkDicom}
+                      />
                     </td>
                     <td className="px-4 py-2.5">
                       <SlotIndicator
@@ -410,10 +479,402 @@ function AuditPanel(): React.JSX.Element {
 
       <p className="text-xs text-slate-400">
         Showing {filtered.length} of {entries.length} station slots.
-        Click "Link IMG1/IMG2" on any missing slot to manually assign a file.
-        The file will be copied into the correct student/station folder.
+        Local files are copied into the correct student/station folder. Linked DICOM studies are the active image source for marking.
+      </p>
+
+      {resolverEntry && (
+        <DicomResolverDialog
+          entry={resolverEntry}
+          onClose={() => setResolverEntry(null)}
+          onLinked={handleDicomLinked}
+        />
+      )}
+    </div>
+  )
+}
+
+function DicomAuditCell({
+  entry,
+  refreshing,
+  unlinking,
+  onResolve,
+  onRefresh,
+  onUnlink
+}: {
+  entry: AuditEntry
+  refreshing: boolean
+  unlinking: boolean
+  onResolve: () => void
+  onRefresh: (link: DicomStudyLink) => void
+  onUnlink: (link: DicomStudyLink) => void
+}): React.JSX.Element {
+  const link = entry.active_dicom_link
+  if (!link) {
+    return (
+      <button
+        onClick={onResolve}
+        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100"
+      >
+        Link DICOM
+      </button>
+    )
+  }
+
+  const previewCount = link.preview_count
+  const state =
+    previewCount === null || previewCount === undefined
+      ? 'unknown'
+      : previewCount >= 2
+        ? 'ready'
+        : 'partial'
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <DicomStateBadge state={state} />
+        <span className="text-xs font-mono text-slate-600 truncate" title={link.patient_id}>
+          {link.patient_id}
+        </span>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        {previewCount === null || previewCount === undefined
+          ? 'Preview status not checked'
+          : `${previewCount} preview image${previewCount === 1 ? '' : 's'} available`}
+      </p>
+      {link.preview_error && (
+        <p className="text-[11px] text-amber-700 line-clamp-2" title={link.preview_error}>
+          {link.preview_error}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1">
+        <button
+          onClick={() => onRefresh(link)}
+          disabled={refreshing}
+          className="px-2 py-1 rounded border border-slate-300 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+        >
+          {refreshing ? 'Refreshing...' : 'Refresh'}
+        </button>
+        <button
+          onClick={() => onUnlink(link)}
+          disabled={unlinking}
+          className="px-2 py-1 rounded border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
+        >
+          {unlinking ? 'Unlinking...' : 'Unlink'}
+        </button>
+        {entry.dicom_links.length > 1 && (
+          <span className="px-2 py-1 rounded bg-amber-50 text-amber-700 text-xs">
+            {entry.dicom_links.length} links
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DicomStateBadge({ state }: { state: 'ready' | 'partial' | 'unknown' }): React.JSX.Element {
+  const styles = {
+    ready: 'bg-green-100 text-green-700',
+    partial: 'bg-amber-100 text-amber-700',
+    unknown: 'bg-slate-100 text-slate-600'
+  }
+  const labels = {
+    ready: 'DICOM ready',
+    partial: 'DICOM partial',
+    unknown: 'DICOM unknown'
+  }
+  return (
+    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ${styles[state]}`}>
+      {labels[state]}
+    </span>
+  )
+}
+
+function parseRawDicomMetadata(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function rawTag(raw: Record<string, unknown> | null, group: string, key: string): string | null {
+  const section = raw?.[group]
+  if (!section || typeof section !== 'object') return null
+  const value = (section as Record<string, unknown>)[key]
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function formatDicomDate(value: string | null | undefined): string {
+  if (!value) return 'N/A'
+  if (/^\d{8}$/.test(value)) return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+  return value
+}
+
+function DicomResolverDialog({
+  entry,
+  onClose,
+  onLinked
+}: {
+  entry: AuditEntry
+  onClose: () => void
+  onLinked: () => void
+}): React.JSX.Element {
+  const [items, setItems] = useState<DicomUnresolvedStudy[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [details, setDetails] = useState<DicomUnresolvedStudyDetails | null>(null)
+  const [loadingList, setLoadingList] = useState(true)
+  const [loadingDetails, setLoadingDetails] = useState(false)
+  const [linking, setLinking] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+
+  const loadItems = useCallback(async () => {
+    setLoadingList(true)
+    setError(null)
+    try {
+      const rows = await window.api.getDicomUnresolved(500)
+      setItems(rows)
+      setSelectedId(rows[0]?.id ?? null)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLoadingList(false)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    loadItems()
+  }, [loadItems])
+
+  React.useEffect(() => {
+    if (!selectedId) {
+      setDetails(null)
+      return
+    }
+
+    let cancelled = false
+    async function loadDetails(): Promise<void> {
+      setLoadingDetails(true)
+      setError(null)
+      try {
+        const next = await window.api.getDicomUnresolvedDetails(selectedId)
+        if (!cancelled) setDetails(next)
+      } catch (err) {
+        if (!cancelled) setError(String(err))
+      } finally {
+        if (!cancelled) setLoadingDetails(false)
+      }
+    }
+    loadDetails()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedId])
+
+  const filtered = items.filter((item) => {
+    const q = query.trim().toLowerCase()
+    if (!q) return true
+    return [
+      item.patient_id,
+      item.study_instance_uid,
+      item.reason,
+      item.orthanc_study_id
+    ].some((value) => value?.toLowerCase().includes(q))
+  })
+
+  async function linkSelected(): Promise<void> {
+    if (!selectedId) return
+    setLinking(true)
+    setError(null)
+    try {
+      const result = await window.api.linkUnresolvedDicomToStation(
+        selectedId,
+        entry.student_id,
+        entry.module_code,
+        entry.station_number
+      )
+      if (!result?.success) {
+        setError(result?.error ?? 'Failed to link DICOM study.')
+        return
+      }
+      await onLinked()
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  const raw = parseRawDicomMetadata(details?.unresolved.raw_metadata ?? null)
+  const studyDescription =
+    details?.study_description ?? rawTag(raw, 'MainDicomTags', 'StudyDescription') ?? 'N/A'
+  const studyDate =
+    details?.study_date ?? rawTag(raw, 'MainDicomTags', 'StudyDate') ?? null
+  const modality = details?.modality ?? rawTag(raw, 'MainDicomTags', 'Modality') ?? 'N/A'
+  const selected = details?.unresolved ?? items.find((item) => item.id === selectedId) ?? null
+
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-950/60 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-slate-800">Link DICOM study</h2>
+            <p className="text-sm text-slate-500 truncate">
+              {entry.full_name} · {entry.student_id} · {entry.module_code} Stn {entry.station_number}
+            </p>
+          </div>
+          <div className="flex-1" />
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-semibold hover:bg-slate-200"
+          >
+            Close
+          </button>
+        </div>
+
+        {error && (
+          <p className="mx-5 mt-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-0 min-h-0 flex-1">
+          <div className="border-r border-slate-200 flex flex-col min-h-0">
+            <div className="p-4 border-b border-slate-200">
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search patient ID, UID, reason"
+                className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700"
+              />
+            </div>
+            {loadingList ? (
+              <div className="p-6 text-sm text-slate-400">Loading unresolved studies...</div>
+            ) : filtered.length === 0 ? (
+              <div className="p-6 text-sm text-slate-400">No unresolved DICOM studies match.</div>
+            ) : (
+              <div className="overflow-y-auto divide-y divide-slate-100">
+                {filtered.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setSelectedId(item.id)}
+                    className={`w-full text-left px-4 py-3 hover:bg-slate-50 ${
+                      selectedId === item.id ? 'bg-indigo-50' : ''
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-slate-800 truncate">
+                      {item.patient_id ?? 'No Patient ID'}
+                    </p>
+                    <p className="text-xs text-slate-500 line-clamp-2">{item.reason}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {new Date(item.seen_at).toLocaleString()}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="p-5 flex flex-col gap-4 min-h-0 overflow-y-auto">
+            {!selected ? (
+              <div className="text-sm text-slate-400">Select an unresolved study to preview it.</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <MetadataLine label="Patient ID" value={selected.patient_id ?? 'N/A'} mono />
+                  <MetadataLine label="Study date" value={formatDicomDate(studyDate)} />
+                  <MetadataLine label="Description" value={studyDescription} />
+                  <MetadataLine label="Modality" value={modality} />
+                  <MetadataLine
+                    label="Series / instances"
+                    value={
+                      details?.series_count === null || details?.series_count === undefined
+                        ? 'N/A'
+                        : `${details.series_count} / ${details.instance_count ?? 'N/A'}`
+                    }
+                  />
+                  <MetadataLine label="Study UID" value={selected.study_instance_uid ?? 'N/A'} mono />
+                </div>
+
+                <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
+                  {selected.reason}
+                </div>
+
+                {loadingDetails ? (
+                  <div className="h-72 flex items-center justify-center text-slate-400">
+                    Loading DICOM previews...
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <DicomPreviewTile preview={details?.previews[0] ?? null} label="Preview 1" />
+                      <DicomPreviewTile preview={details?.previews[1] ?? null} label="Preview 2" />
+                    </div>
+                    {details?.error && (
+                      <p className="text-xs text-amber-700">
+                        Preview warning: {details.error}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={linkSelected}
+                    disabled={linking || loadingDetails || !selectedId}
+                    className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40"
+                  >
+                    {linking ? 'Linking...' : 'Link to station'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MetadataLine({
+  label,
+  value,
+  mono = false
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}): React.JSX.Element {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-semibold uppercase text-slate-400">{label}</p>
+      <p className={`text-slate-700 truncate ${mono ? 'font-mono text-xs' : 'text-sm'}`} title={value}>
+        {value}
       </p>
     </div>
+  )
+}
+
+function DicomPreviewTile({
+  preview,
+  label
+}: {
+  preview: DicomStudyPreview | null
+  label: string
+}): React.JSX.Element {
+  return (
+    <ImageViewer
+      dataUrl={preview?.dataUrl ?? null}
+      label={label}
+      className="h-72 rounded-lg overflow-hidden"
+    />
   )
 }
 
@@ -479,7 +940,12 @@ function ProfilePanel(): React.JSX.Element {
   const [profiles, setProfiles] = useState<Array<{ id: string; name: string; is_active: number }>>([])
   const [selectedModule, setSelectedModule] = useState('')
   const [selectedStation, setSelectedStation] = useState<number | null>(null)
-  const [studentPaste, setStudentPaste] = useState('')
+  const [studentSearch, setStudentSearch] = useState('')
+  const [studentModuleFilter, setStudentModuleFilter] = useState('ALL')
+  const [studentImportPath, setStudentImportPath] = useState('')
+  const [studentImporting, setStudentImporting] = useState(false)
+  const [studentImportResult, setStudentImportResult] = useState<CsvStudentPreviewResult | null>(null)
+  const [pendingStudentImport, setPendingStudentImport] = useState<PendingStudentImport | null>(null)
   const [pin, setPin] = useState('')
   const [newProfileName, setNewProfileName] = useState('')
   const [showNewProfile, setShowNewProfile] = useState(false)
@@ -515,6 +981,72 @@ function ProfilePanel(): React.JSX.Element {
 
   function update(next: ProfileConfig): void {
     setCfg({ ...next })
+  }
+
+  function isConclusionField(field: StationFormField): boolean {
+    return field.field_id.toUpperCase().includes('CONCLUSION')
+  }
+
+  function orderStationFields(fields: StationFormField[]): StationFormField[] {
+    const rubricFields = fields.filter((field) => !isConclusionField(field))
+    const localFields = fields.filter(isConclusionField)
+    return [
+      ...rubricFields.map((field, index) => ({ ...field, sort_order: index })),
+      ...localFields.map((field, index) => ({ ...field, sort_order: rubricFields.length + index }))
+    ]
+  }
+
+  function cloneRubricField(field: StationFormField, sortOrder: number): StationFormField {
+    return {
+      ...field,
+      min_score: field.field_type === 'score' ? field.min_score ?? 0 : null,
+      max_score: field.field_type === 'score' ? field.max_score ?? 10 : null,
+      tolerance: field.tolerance ?? 1,
+      required: field.field_type === 'score' ? true : field.required,
+      sort_order: sortOrder
+    }
+  }
+
+  function defaultRubricFields(): StationFormField[] {
+    return [
+      { field_id: 'IMG1', label: 'Image 1', field_type: 'score', min_score: 0, max_score: 10, tolerance: 1, required: true, sort_order: 0 },
+      { field_id: 'IMG2', label: 'Image 2', field_type: 'score', min_score: 0, max_score: 10, tolerance: 1, required: true, sort_order: 1 }
+    ]
+  }
+
+  function rubricTemplateForStation(stationNumber: number): StationFormField[] {
+    const source = cfg?.modules
+      .flatMap((module) => module.stations)
+      .find((candidate) => candidate.station_number === stationNumber)
+    const fields = source?.form_fields.filter((field) => !isConclusionField(field)) ?? []
+    return (fields.length > 0 ? fields : defaultRubricFields()).map(cloneRubricField)
+  }
+
+  function defaultStation(moduleCode: string, stationNumber: number, rubricFields: StationFormField[]): ProfileStation {
+    return {
+      module_code: moduleCode,
+      station_number: stationNumber,
+      label: `Station ${stationNumber}`,
+      candidate_instructions: '',
+      form_fields: orderStationFields(rubricFields.map(cloneRubricField))
+    }
+  }
+
+  function stationHasConclusion(target: ProfileStation): boolean {
+    return target.form_fields.some(isConclusionField)
+  }
+
+  function conclusionField(sortOrder: number): StationFormField {
+    return {
+      field_id: 'CONCLUSION',
+      label: 'Conclusion',
+      field_type: 'score',
+      min_score: 0,
+      max_score: 1,
+      tolerance: 1,
+      required: true,
+      sort_order: sortOrder
+    }
   }
 
   async function save(): Promise<void> {
@@ -603,16 +1135,25 @@ function ProfilePanel(): React.JSX.Element {
       return
     }
     setError(null)
+    const stationNumbers = [...new Set(cfg.modules.flatMap((m) => m.stations.map((s) => s.station_number)))]
+      .sort((a, b) => a - b)
     const next = {
       ...cfg,
       modules: [
         ...cfg.modules,
-        { code, name, aliases: [code], stations: [] }
+        {
+          code,
+          name,
+          aliases: [code],
+          stations: stationNumbers.map((stationNumber) =>
+            defaultStation(code, stationNumber, rubricTemplateForStation(stationNumber))
+          )
+        }
       ]
     }
     update(next)
     setSelectedModule(code)
-    setSelectedStation(null)
+    setSelectedStation(stationNumbers[0] ?? null)
     setNewModuleCode('')
     setNewModuleName('')
     setShowNewModule(false)
@@ -635,39 +1176,37 @@ function ProfilePanel(): React.JSX.Element {
       setError('Station number must be a positive whole number.')
       return
     }
-    if (mod.stations.some((s) => s.station_number === n)) {
-      setError(`Station ${n} already exists for ${mod.code}.`)
+    if (cfg.modules.every((m) => m.stations.some((s) => s.station_number === n))) {
+      setError(`Station ${n} already exists on every module.`)
       return
     }
     setError(null)
+    const rubricFields = rubricTemplateForStation(n)
     const next = {
       ...cfg,
       modules: cfg.modules.map((m) =>
-        m.code === mod.code
-          ? {
-              ...m,
-              stations: [
-                ...m.stations,
-                {
-                  module_code: m.code,
-                  station_number: n,
-                  label: `Station ${n}`,
-                  candidate_instructions: '',
-                  form_fields: [
-                    { field_id: 'IMG1', label: 'Image 1', field_type: 'score' as const, max_score: 10, tolerance: 1, required: true, sort_order: 0 },
-                    { field_id: 'IMG2', label: 'Image 2', field_type: 'score' as const, max_score: 10, tolerance: 1, required: true, sort_order: 1 }
-                  ]
-                }
-              ]
-            }
-          : m
+        m.stations.some((s) => s.station_number === n)
+          ? m
+          : { ...m, stations: [...m.stations, defaultStation(m.code, n, rubricFields)] }
       )
     }
     update(next)
     setSelectedStation(n)
     setNewStationNumber('')
     setShowNewStation(false)
-    setStatus(`Station ${n} staged. Click Save Profile to persist it.`)
+    setStatus(`Station ${n} staged for all modules. Click Save Profile to persist it.`)
+  }
+
+  function deleteStation(stationNumber: number): void {
+    if (!cfg) return
+    if (!window.confirm(`Delete Station ${stationNumber} from every module in this profile?`)) return
+    const nextModules = cfg.modules.map((m) => ({
+      ...m,
+      stations: m.stations.filter((s) => s.station_number !== stationNumber)
+    }))
+    update({ ...cfg, modules: nextModules })
+    setSelectedStation(nextModules.find((m) => m.code === selectedModule)?.stations[0]?.station_number ?? null)
+    setStatus(`Station ${stationNumber} deletion staged for all modules. Save profile to apply.`)
   }
 
   function updateStationField<K extends 'label' | 'candidate_instructions'>(key: K, value: string): void {
@@ -692,8 +1231,11 @@ function ProfilePanel(): React.JSX.Element {
     const label = newFieldLabel.trim()
     if (!label) return
     const fieldId = label.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-    if (station.form_fields.some((field) => field.field_id === fieldId)) {
-      setError(`A field with ID ${fieldId} already exists on this station.`)
+    const matchingStations = cfg.modules.flatMap((m) =>
+      m.stations.filter((s) => s.station_number === station.station_number)
+    )
+    if (matchingStations.some((s) => s.form_fields.some((field) => field.field_id === fieldId))) {
+      setError(`A field with ID ${fieldId} already exists on Station ${station.station_number}.`)
       return
     }
     setError(null)
@@ -701,29 +1243,28 @@ function ProfilePanel(): React.JSX.Element {
       field_id: fieldId,
       label,
       field_type: type,
+      min_score: type === 'score' ? 0 : null,
       max_score: type === 'score' ? 10 : null,
       tolerance: 1,
       required: type === 'score',
-      sort_order: station.form_fields.length
+      sort_order: station.form_fields.filter((field) => !isConclusionField(field)).length
     }
     update({
       ...cfg,
       modules: cfg.modules.map((m) =>
-        m.code === mod.code
-          ? {
-              ...m,
-              stations: m.stations.map((s) =>
-                s.station_number === station.station_number
-                  ? { ...s, form_fields: [...s.form_fields, newField] }
-                  : s
-              )
-            }
-          : m
+        ({
+          ...m,
+          stations: m.stations.map((s) =>
+            s.station_number === station.station_number
+              ? { ...s, form_fields: orderStationFields([...s.form_fields, newField]) }
+              : s
+          )
+        })
       )
     })
     setNewFieldType(null)
     setNewFieldLabel('')
-    setStatus(`${type === 'score' ? 'Score' : 'Text'} field staged. Click Save Profile to persist it.`)
+    setStatus(`${type === 'score' ? 'Score' : 'Text'} field staged for Station ${station.station_number} in all modules. Click Save Profile to persist it.`)
   }
 
   function updateField(fieldId: string, patch: Partial<StationFormField>): void {
@@ -731,19 +1272,19 @@ function ProfilePanel(): React.JSX.Element {
     update({
       ...cfg,
       modules: cfg.modules.map((m) =>
-        m.code === mod.code
-          ? {
-              ...m,
-              stations: m.stations.map((s) =>
-                s.station_number === station.station_number
-                  ? {
-                      ...s,
-                      form_fields: s.form_fields.map((f) => (f.field_id === fieldId ? { ...f, ...patch } : f))
-                    }
-                  : s
-              )
-            }
-          : m
+        ({
+          ...m,
+          stations: m.stations.map((s) =>
+            s.station_number === station.station_number
+              ? {
+                  ...s,
+                  form_fields: orderStationFields(
+                    s.form_fields.map((f) => (f.field_id === fieldId && !isConclusionField(f) ? { ...f, ...patch } : f))
+                  )
+                }
+              : s
+          )
+        })
       )
     })
   }
@@ -753,45 +1294,222 @@ function ProfilePanel(): React.JSX.Element {
     update({
       ...cfg,
       modules: cfg.modules.map((m) =>
-        m.code === mod.code
-          ? {
-              ...m,
-              stations: m.stations.map((s) =>
-                s.station_number === station.station_number
-                  ? { ...s, form_fields: s.form_fields.filter((f) => f.field_id !== fieldId) }
-                  : s
-              )
-            }
-          : m
+        ({
+          ...m,
+          stations: m.stations.map((s) =>
+            s.station_number === station.station_number
+              ? { ...s, form_fields: orderStationFields(s.form_fields.filter((f) => f.field_id !== fieldId || isConclusionField(f))) }
+              : s
+          )
+        })
       )
     })
   }
 
-  function pasteStudents(): void {
-    if (!cfg || !studentPaste.trim()) return
-    const rows = studentPaste
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split(/\t|,/).map((p) => p.trim())
-        return {
-          student_id: (parts[0] ?? '').replace(/\D/g, ''),
-          full_name: parts[1] ?? '',
-          module_codes: (parts[2] ?? '').split(/[;\s]+/).map((m) => m.trim().toUpperCase()).filter(Boolean)
-        }
-      })
-      .filter((row) => row.student_id && row.full_name)
+  function toggleConclusion(enabled: boolean): void {
+    if (!cfg || !mod || !station) return
+    update({
+      ...cfg,
+      modules: cfg.modules.map((m) =>
+        m.code === mod.code
+          ? {
+              ...m,
+              stations: m.stations.map((s) => {
+                if (s.station_number !== station.station_number) return s
+                const withoutConclusion = s.form_fields.filter((field) => !isConclusionField(field))
+                return {
+                  ...s,
+                  form_fields: orderStationFields(
+                    enabled ? [...withoutConclusion, conclusionField(withoutConclusion.length)] : withoutConclusion
+                  )
+                }
+              })
+            }
+          : m
+      )
+    })
+    setStatus(
+      enabled
+        ? `Conclusion form enabled for ${mod.code} Station ${station.station_number}. Save profile to apply.`
+        : `Conclusion form disabled for ${mod.code} Station ${station.station_number}. Save profile to apply.`
+    )
+  }
+
+  function cleanStudentId(value: string): string {
+    return value.replace(/\D/g, '')
+  }
+
+  function normalizeName(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').toLowerCase()
+  }
+
+  function mergeStudentRows(rows: CsvStudentPreviewRow[]): void {
+    if (!cfg || rows.length === 0) return
     const byId = new Map(cfg.students.map((student) => [student.student_id, student]))
-    for (const row of rows) byId.set(row.student_id, row)
-    update({ ...cfg, students: [...byId.values()] })
-    setStudentPaste('')
-    setStatus(`${rows.length} pasted student rows staged. Save profile to apply.`)
+    const order = cfg.students.map((student) => student.student_id)
+
+    for (const row of rows) {
+      const existing = byId.get(row.student_id)
+      if (existing) {
+        byId.set(row.student_id, {
+          ...existing,
+          full_name: existing.full_name.trim() ? existing.full_name : row.full_name,
+          module_codes: [...new Set([...existing.module_codes, ...row.module_codes])]
+        })
+      } else {
+        byId.set(row.student_id, {
+          student_id: row.student_id,
+          full_name: row.full_name,
+          module_codes: [...new Set(row.module_codes)]
+        })
+        order.push(row.student_id)
+      }
+    }
+
+    update({ ...cfg, students: order.map((studentId) => byId.get(studentId)!).filter(Boolean) })
+    setStatus(`${rows.length} CSV student rows staged. Save profile to apply.`)
+  }
+
+  function findDuplicateImportRows(result: CsvStudentPreviewResult): Set<number> {
+    if (!cfg) return new Set()
+    const duplicateRows = new Set<number>()
+    const existingIds = new Set(cfg.students.map((student) => student.student_id))
+    const existingNames = new Map<string, string[]>()
+    for (const student of cfg.students) {
+      const name = normalizeName(student.full_name)
+      if (!name) continue
+      existingNames.set(name, [...(existingNames.get(name) ?? []), student.student_id])
+    }
+
+    const seenIds = new Map<string, number>()
+    const seenNames = new Map<string, number>()
+    for (const row of result.rows) {
+      const normalizedName = normalizeName(row.full_name)
+      const matchingNameIds = existingNames.get(normalizedName) ?? []
+      if (
+        existingIds.has(row.student_id) ||
+        matchingNameIds.some((studentId) => studentId !== row.student_id) ||
+        seenIds.has(row.student_id) ||
+        (normalizedName && seenNames.has(normalizedName))
+      ) {
+        duplicateRows.add(row.row)
+        const firstIdRow = seenIds.get(row.student_id)
+        const firstNameRow = normalizedName ? seenNames.get(normalizedName) : undefined
+        if (firstIdRow) duplicateRows.add(firstIdRow)
+        if (firstNameRow) duplicateRows.add(firstNameRow)
+      }
+      seenIds.set(row.student_id, row.row)
+      if (normalizedName) seenNames.set(normalizedName, row.row)
+    }
+
+    return duplicateRows
+  }
+
+  async function browseStudentCsv(): Promise<void> {
+    const p = await window.api.selectFile([{ name: 'CSV', extensions: ['csv'] }])
+    if (p) setStudentImportPath(p)
+  }
+
+  async function previewStudentImport(): Promise<void> {
+    if (!cfg || !studentImportPath) return
+    setStudentImporting(true)
+    setError(null)
+    setStatus(null)
+    setStudentImportResult(null)
+    try {
+      const result = await window.api.previewStudentCsv(studentImportPath) as CsvStudentPreviewResult
+      setStudentImportResult(result)
+      if (result.rows.length === 0) {
+        setError(result.errors[0]?.reason ?? 'No valid student rows found in CSV.')
+        return
+      }
+      const duplicateRowKeys = findDuplicateImportRows(result)
+      if (duplicateRowKeys.size > 0) {
+        setPendingStudentImport({
+          result,
+          duplicateRowKeys,
+          excludedRowKeys: new Set()
+        })
+        return
+      }
+      mergeStudentRows(result.rows)
+      setStudentImportPath('')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setStudentImporting(false)
+    }
+  }
+
+  function confirmPendingStudentImport(): void {
+    if (!pendingStudentImport) return
+    const rows = pendingStudentImport.result.rows.filter((row) => !pendingStudentImport.excludedRowKeys.has(row.row))
+    mergeStudentRows(rows)
+    setStudentImportPath('')
+    setPendingStudentImport(null)
+  }
+
+  function updateStudent(index: number, patch: Partial<ProfileStudent>): void {
+    if (!cfg) return
+    update({
+      ...cfg,
+      students: cfg.students.map((student, i) => (i === index ? { ...student, ...patch } : student))
+    })
+  }
+
+  function toggleStudentModule(index: number, moduleCode: string): void {
+    if (!cfg) return
+    const student = cfg.students[index]
+    if (!student) return
+    const hasModule = student.module_codes.includes(moduleCode)
+    const module_codes = hasModule
+      ? student.module_codes.filter((code) => code !== moduleCode)
+      : [...student.module_codes, moduleCode]
+    updateStudent(index, { module_codes })
+  }
+
+  function addStudent(): void {
+    if (!cfg) return
+    update({
+      ...cfg,
+      students: [
+        ...cfg.students,
+        {
+          student_id: '',
+          full_name: '',
+          module_codes: selectedModule ? [selectedModule] : []
+        }
+      ]
+    })
+    setStatus('Blank student row staged. Enter the details and save the profile.')
+  }
+
+  function deleteStudent(index: number): void {
+    if (!cfg) return
+    const student = cfg.students[index]
+    if (!student) return
+    if (!window.confirm(`Delete ${student.full_name || student.student_id || 'this student'} from the staged profile?`)) return
+    update({ ...cfg, students: cfg.students.filter((_, i) => i !== index) })
+    setStatus('Student deletion staged. Save profile to apply.')
   }
 
   if (!cfg) {
     return <div className="text-center text-slate-400 py-12">Loading profile...</div>
   }
+
+  const moduleOptions = cfg.modules.map((module) => module.code)
+  const filteredStudents = cfg.students
+    .map((student, index) => ({ student, index }))
+    .filter(({ student }) => {
+      const q = studentSearch.trim().toLowerCase()
+      if (studentModuleFilter !== 'ALL' && !student.module_codes.includes(studentModuleFilter)) return false
+      if (!q) return true
+      return (
+        student.student_id.toLowerCase().includes(q) ||
+        student.full_name.toLowerCase().includes(q) ||
+        student.module_codes.join(' ').toLowerCase().includes(q)
+      )
+    })
 
   return (
     <div className="flex flex-col gap-6">
@@ -1010,6 +1728,14 @@ function ProfilePanel(): React.JSX.Element {
                 >
                   Add Station
                 </button>
+                {station && (
+                  <button
+                    onClick={() => deleteStation(station.station_number)}
+                    className="px-3 py-1 rounded-lg text-xs font-semibold text-red-600 bg-red-50"
+                  >
+                    Delete Station
+                  </button>
+                )}
               </div>
               {showNewStation && (
                 <div className="flex gap-2 items-center bg-blue-50 border border-blue-100 rounded-lg p-2">
@@ -1056,8 +1782,17 @@ function ProfilePanel(): React.JSX.Element {
                     placeholder="Candidate instructions"
                     className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
                   />
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={stationHasConclusion(station)}
+                      onChange={(event) => toggleConclusion(event.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Requires conclusion form for {mod.code} Station {station.station_number}
+                  </label>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold uppercase text-slate-500">Fields</span>
+                    <span className="text-xs font-bold uppercase text-slate-500">Universal rubric fields</span>
                     <button onClick={() => { setNewFieldType('score'); setNewFieldLabel(''); setError(null) }} className="text-xs text-blue-600 font-semibold">Add Score</button>
                     <button onClick={() => { setNewFieldType('text'); setNewFieldLabel(''); setError(null) }} className="text-xs text-blue-600 font-semibold">Add Text</button>
                   </div>
@@ -1092,14 +1827,30 @@ function ProfilePanel(): React.JSX.Element {
                     </div>
                   )}
                   <div className="flex flex-col gap-2">
-                    {station.form_fields.map((field) => (
-                      <div key={field.field_id} className="grid grid-cols-1 md:grid-cols-[1fr_90px_90px_90px_80px] gap-2 items-center bg-slate-50 rounded-lg p-2">
+                    <div className="hidden md:grid md:grid-cols-[1fr_80px_80px_80px_90px_80px] gap-2 px-2 text-xs font-semibold uppercase text-slate-400">
+                      <span>Label</span>
+                      <span>Type</span>
+                      <span>Min</span>
+                      <span>Max</span>
+                      <span>Tolerance</span>
+                      <span />
+                    </div>
+                    {station.form_fields.filter((field) => !isConclusionField(field)).map((field) => (
+                      <div key={field.field_id} className="grid grid-cols-1 md:grid-cols-[1fr_80px_80px_80px_90px_80px] gap-2 items-center bg-slate-50 rounded-lg p-2">
                         <input
                           value={field.label}
                           onChange={(event) => updateField(field.field_id, { label: event.target.value })}
                           className="border border-slate-300 rounded-lg px-2 py-1 text-sm"
                         />
                         <span className="text-xs font-semibold text-slate-500 uppercase">{field.field_type}</span>
+                        {field.field_type === 'score' ? (
+                          <input
+                            type="number"
+                            value={field.min_score ?? 0}
+                            onChange={(event) => updateField(field.field_id, { min_score: Number(event.target.value) })}
+                            className="border border-slate-300 rounded-lg px-2 py-1 text-sm"
+                          />
+                        ) : <span />}
                         {field.field_type === 'score' ? (
                           <input
                             type="number"
@@ -1127,7 +1878,7 @@ function ProfilePanel(): React.JSX.Element {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-3">
           <h3 className="font-bold text-slate-800">Examiners</h3>
           {cfg.examiners.map((examiner, index) => (
@@ -1151,24 +1902,256 @@ function ProfilePanel(): React.JSX.Element {
           </button>
         </div>
 
-        <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-3">
-          <h3 className="font-bold text-slate-800">Students</h3>
-          <p className="text-xs text-slate-500">Paste rows as student_id, full_name, module codes. Module codes can be separated by spaces or semicolons.</p>
-          <textarea
-            value={studentPaste}
-            onChange={(event) => setStudentPaste(event.target.value)}
-            rows={6}
-            className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
-            placeholder={'100123456, Jane Smith, AS FC\n100987654, Alex Jones, HD'}
-          />
-          <div className="flex items-center gap-3">
-            <button onClick={pasteStudents} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold">
-              Stage pasted students
-            </button>
-            <span className="text-sm text-slate-500">{cfg.students.length} students in profile</span>
+        <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <h3 className="font-bold text-slate-800">Students</h3>
+              <p className="text-xs text-slate-500">
+                CSV columns: full_name, student_id, module_code_1, module_code_2. Imports are staged until the profile is saved.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                readOnly
+                value={studentImportPath}
+                placeholder="No CSV selected"
+                className="w-full sm:w-72 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 truncate"
+              />
+              <button
+                onClick={browseStudentCsv}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg text-sm font-medium text-slate-700"
+              >
+                Browse CSV
+              </button>
+              <button
+                onClick={previewStudentImport}
+                disabled={!studentImportPath || studentImporting}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold disabled:opacity-40"
+              >
+                {studentImporting ? 'Checking...' : 'Import CSV'}
+              </button>
+            </div>
           </div>
+
+          {studentImportResult && studentImportResult.errors.length > 0 && (
+            <details className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
+              <summary className="cursor-pointer font-semibold text-amber-800">
+                {studentImportResult.errors.length} CSV row errors
+              </summary>
+              <ul className="mt-2 space-y-1 text-amber-800 max-h-44 overflow-y-auto">
+                {studentImportResult.errors.map((rowError) => (
+                  <li key={`${rowError.row}-${rowError.reason}`}>
+                    Row {rowError.row}: {rowError.reason}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <input
+              value={studentSearch}
+              onChange={(event) => setStudentSearch(event.target.value)}
+              placeholder="Search name, student ID, or module"
+              className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+            />
+            <div className="flex gap-2 flex-wrap">
+              <FilterChip label="All modules" active={studentModuleFilter === 'ALL'} onClick={() => setStudentModuleFilter('ALL')} />
+              {moduleOptions.map((code) => (
+                <FilterChip key={code} label={code} active={studentModuleFilter === code} onClick={() => setStudentModuleFilter(code)} />
+              ))}
+            </div>
+            <button
+              onClick={addStudent}
+              className="px-4 py-2 bg-blue-50 text-blue-700 rounded-lg text-sm font-semibold border border-blue-200"
+            >
+              Add student
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="px-3 py-3 text-left font-semibold w-40">Student ID</th>
+                  <th className="px-3 py-3 text-left font-semibold min-w-64">Full name</th>
+                  <th className="px-3 py-3 text-left font-semibold">Modules</th>
+                  <th className="px-3 py-3 text-right font-semibold w-24">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-10 text-center text-slate-400">
+                      No students match the current filters.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredStudents.map(({ student, index }) => (
+                    <tr key={`${student.student_id || 'new'}-${index}`} className="hover:bg-slate-50">
+                      <td className="px-3 py-2 align-top">
+                        <input
+                          value={student.student_id}
+                          onChange={(event) => updateStudent(index, { student_id: cleanStudentId(event.target.value) })}
+                          placeholder="9 digit ID"
+                          className="w-36 border border-slate-300 rounded-lg px-2 py-1 text-sm font-mono"
+                        />
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <input
+                          value={student.full_name}
+                          onChange={(event) => updateStudent(index, { full_name: event.target.value })}
+                          placeholder="Full name"
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+                        />
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <div className="flex flex-wrap gap-2">
+                          {moduleOptions.map((code) => (
+                            <label
+                              key={code}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${
+                                student.module_codes.includes(code)
+                                  ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                  : 'border-slate-200 bg-white text-slate-500'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={student.module_codes.includes(code)}
+                                onChange={() => toggleStudentModule(index, code)}
+                                className="h-3 w-3"
+                              />
+                              {code}
+                            </label>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-right">
+                        <button
+                          onClick={() => deleteStudent(index)}
+                          className="text-xs text-red-600 font-semibold"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-sm text-slate-500">
+            Showing {filteredStudents.length} of {cfg.students.length} students. Edits, imports, and deletions are staged until Save Profile.
+          </p>
         </div>
       </div>
+
+      <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-slate-500">Save staged profile changes before leaving admin.</p>
+        <button onClick={save} disabled={saving} className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold disabled:opacity-40">
+          {saving ? 'Saving...' : 'Save Profile'}
+        </button>
+      </div>
+
+      {pendingStudentImport && (
+        <div className="fixed inset-0 z-40 bg-slate-950/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Review possible duplicate students</h2>
+                <p className="text-sm text-slate-500">
+                  Duplicate rows are highlighted. Excluded rows will not be staged.
+                </p>
+              </div>
+              <div className="flex-1" />
+              <button
+                onClick={() => setPendingStudentImport(null)}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-semibold hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-5">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-600 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th className="px-3 py-3 text-left font-semibold">Import</th>
+                      <th className="px-3 py-3 text-left font-semibold">Row</th>
+                      <th className="px-3 py-3 text-left font-semibold">Student ID</th>
+                      <th className="px-3 py-3 text-left font-semibold">Full name</th>
+                      <th className="px-3 py-3 text-left font-semibold">Modules</th>
+                      <th className="px-3 py-3 text-left font-semibold">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {pendingStudentImport.result.rows.map((row) => {
+                      const duplicate = pendingStudentImport.duplicateRowKeys.has(row.row)
+                      const excluded = pendingStudentImport.excludedRowKeys.has(row.row)
+                      const existingSameId = cfg.students.find((student) => student.student_id === row.student_id)
+                      const existingSameName = cfg.students.find((student) =>
+                        normalizeName(student.full_name) === normalizeName(row.full_name) && student.student_id !== row.student_id
+                      )
+                      const reason = existingSameId
+                        ? `Existing ID: ${existingSameId.full_name}`
+                        : existingSameName
+                        ? `Name matches ID ${existingSameName.student_id}`
+                        : 'Duplicate within CSV'
+
+                      return (
+                        <tr key={row.row} className={duplicate ? 'bg-amber-50' : ''}>
+                          <td className="px-3 py-2">
+                            {duplicate ? (
+                              <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={!excluded}
+                                  onChange={() => {
+                                    const next = new Set(pendingStudentImport.excludedRowKeys)
+                                    if (next.has(row.row)) next.delete(row.row)
+                                    else next.add(row.row)
+                                    setPendingStudentImport({ ...pendingStudentImport, excludedRowKeys: next })
+                                  }}
+                                />
+                                Include
+                              </label>
+                            ) : (
+                              <span className="text-xs text-slate-400">Included</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">{row.row}</td>
+                          <td className="px-3 py-2 font-mono text-xs text-slate-700">{row.student_id}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.full_name}</td>
+                          <td className="px-3 py-2 text-slate-600">{row.module_codes.join(', ')}</td>
+                          <td className="px-3 py-2 text-amber-800">{duplicate ? reason : ''}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setPendingStudentImport(null)}
+                className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmPendingStudentImport}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+              >
+                Stage selected rows
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -42,6 +42,7 @@ const api = {
 
   // CSV
   importCsv: (filePath: string) => ipcRenderer.invoke('csv:import', filePath),
+  previewStudentCsv: (filePath: string) => ipcRenderer.invoke('csv:previewStudents', filePath),
 
   // File sorter
   runFileSort: (sourcePath: string, targetRoot: string) =>
@@ -204,7 +205,19 @@ const api = {
     ipcRenderer.invoke('dicom:getStudyPreview', orthanc_study_id),
   getDicomStudyPreviews: (orthanc_study_id: string, limit?: number) =>
     ipcRenderer.invoke('dicom:getStudyPreviews', orthanc_study_id, limit),
-  getDicomUnresolved: (limit?: number) => ipcRenderer.invoke('dicom:getUnresolved', limit)
+  getDicomUnresolved: (limit?: number) => ipcRenderer.invoke('dicom:getUnresolved', limit),
+  getDicomUnresolvedDetails: (unresolved_id: number) =>
+    ipcRenderer.invoke('dicom:getUnresolvedDetails', unresolved_id),
+  linkUnresolvedDicomToStation: (
+    unresolved_id: number,
+    student_id: string,
+    module_code: string,
+    station_number: number
+  ) => ipcRenderer.invoke('dicom:linkUnresolvedToStation', unresolved_id, student_id, module_code, station_number),
+  unlinkDicomStudyLink: (link_id: number, restore_unresolved: boolean) =>
+    ipcRenderer.invoke('dicom:unlinkStudyLink', link_id, restore_unresolved),
+  refreshDicomLinkPreviewState: (link_id: number) =>
+    ipcRenderer.invoke('dicom:refreshLinkPreviewState', link_id)
 }
 
 if (process.contextIsolated) {
