@@ -18,6 +18,10 @@ function cleanCode(value: string): string {
   return value.trim().toUpperCase()
 }
 
+function isConclusionField(fieldId: string): boolean {
+  return fieldId.toUpperCase().includes('CONCLUSION')
+}
+
 function hashPin(pin: string, salt: string): string {
   return createHash('sha256').update(`${salt}:${pin}`).digest('hex')
 }
@@ -107,8 +111,8 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
     `)
     const insertField = db.prepare(`
       INSERT INTO station_form_fields
-        (profile_id, module_code, station_number, field_id, label, field_type, max_score, tolerance, required, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (profile_id, module_code, station_number, field_id, label, field_type, min_score, max_score, tolerance, required, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertStudent = db.prepare(`
       INSERT INTO profile_students (profile_id, student_id, full_name, created_at, updated_at)
@@ -148,6 +152,12 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
         )
         station.form_fields.forEach((field, fieldIndex) => {
           const fieldId = field.field_id.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') || `FIELD_${fieldIndex + 1}`
+          const isConclusion = field.field_type === 'score' && isConclusionField(fieldId)
+          const minScore = field.field_type === 'score' ? (isConclusion ? 0 : field.min_score ?? 0) : null
+          const maxScore = field.field_type === 'score' ? (isConclusion ? 1 : field.max_score ?? 10) : null
+          if (minScore !== null && maxScore !== null && maxScore < minScore) {
+            throw new Error(`${field.label || fieldId} maximum score must be greater than or equal to its minimum score.`)
+          }
           insertField.run(
             profileId,
             code,
@@ -155,7 +165,8 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
             fieldId,
             field.label.trim() || fieldId,
             field.field_type,
-            field.field_type === 'score' ? field.max_score ?? 10 : null,
+            minScore,
+            maxScore,
             field.tolerance ?? 1,
             field.required ? 1 : 0,
             fieldIndex,

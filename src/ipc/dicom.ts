@@ -5,13 +5,16 @@ import { join } from 'path'
 import { getStudentByShortId, resolveModuleAlias } from '../db/queries'
 import type {
   DicomParsedPatientId,
+  DicomManualLinkResult,
   DicomServerConfig,
   DicomStudyLink,
   DicomStudyPreview,
   DicomStudyPreviews,
   DicomSyncResult,
+  DicomUnlinkResult,
   DicomUploadItem,
   DicomUploadResult,
+  DicomUnresolvedStudyDetails,
   DicomUnresolvedStudy
 } from '../types/ipc'
 
@@ -190,7 +193,7 @@ export async function testOrthancConnection(
 
 function insertUnresolved(
   db: Database.Database,
-  runId: number,
+  runId: number | null,
   studyId: string | null,
   patientId: string | null,
   studyInstanceUid: string | null,
@@ -225,6 +228,27 @@ function insertUnresolved(
 
 function rowToStudyLink(row: unknown): DicomStudyLink {
   return row as DicomStudyLink
+}
+
+async function refreshLinkPreviewState(
+  db: Database.Database,
+  linkId: number
+): Promise<DicomStudyLink | null> {
+  const link = db.prepare('SELECT * FROM dicom_study_links WHERE id = ?').get(linkId) as DicomStudyLink | undefined
+  if (!link) return null
+
+  const checkedAt = new Date().toISOString()
+  const result = await getDicomStudyPreviews(db, link.orthanc_study_id, 2)
+  const previewCount = result.previews.filter((preview) => Boolean(preview.dataUrl)).length
+  const previewError = result.error ?? (previewCount < 2 ? `Only ${previewCount} preview image(s) available.` : null)
+
+  db.prepare(`
+    UPDATE dicom_study_links
+    SET preview_count = ?, preview_error = ?, preview_checked_at = ?
+    WHERE id = ?
+  `).run(previewCount, previewError, checkedAt, linkId)
+
+  return rowToStudyLink(db.prepare('SELECT * FROM dicom_study_links WHERE id = ?').get(linkId))
 }
 
 async function getStudySeriesSummary(
@@ -400,6 +424,197 @@ export function getRecentDicomUnresolved(
     ORDER BY seen_at DESC, id DESC
     LIMIT ?
   `).all(limit) as DicomUnresolvedStudy[]
+}
+
+export async function getDicomUnresolvedStudyDetails(
+  db: Database.Database,
+  unresolvedId: number
+): Promise<DicomUnresolvedStudyDetails | null> {
+  const unresolved = db
+    .prepare('SELECT * FROM dicom_unresolved_studies WHERE id = ?')
+    .get(unresolvedId) as DicomUnresolvedStudy | undefined
+  if (!unresolved) return null
+
+  let studyDescription: string | null = null
+  let studyDate: string | null = null
+  let modality: string | null = null
+  let seriesCount: number | null = null
+  let instanceCount: number | null = null
+
+  if (unresolved.orthanc_study_id) {
+    const cfg = getDicomServerConfig(db)
+    if (cfg) {
+      try {
+        const study = await orthancGet<OrthancStudyDetails>(
+          cfg.orthanc_base_url,
+          `/studies/${encodeURIComponent(unresolved.orthanc_study_id)}`
+        )
+        const summary = await getStudySeriesSummary(cfg.orthanc_base_url, study)
+        studyDescription = study.MainDicomTags?.StudyDescription ?? null
+        studyDate = study.MainDicomTags?.StudyDate ?? null
+        modality = summary.modality
+        seriesCount = summary.seriesCount
+        instanceCount = summary.instanceCount
+      } catch {
+        // Preview retrieval below will surface a usable error for the resolver.
+      }
+    }
+  }
+
+  const previewResult = unresolved.orthanc_study_id
+    ? await getDicomStudyPreviews(db, unresolved.orthanc_study_id, 2)
+    : { orthanc_study_id: '', previews: [], error: 'This unresolved item has no Orthanc study ID.' }
+
+  return {
+    unresolved,
+    previews: previewResult.previews,
+    error: previewResult.error,
+    study_description: studyDescription,
+    study_date: studyDate,
+    modality,
+    series_count: seriesCount,
+    instance_count: instanceCount
+  }
+}
+
+export async function refreshDicomLinkPreviewState(
+  db: Database.Database,
+  linkId: number
+): Promise<DicomStudyLink | null> {
+  return refreshLinkPreviewState(db, linkId)
+}
+
+export async function linkUnresolvedDicomStudyToStation(
+  db: Database.Database,
+  unresolvedId: number,
+  studentId: string,
+  moduleCode: string,
+  stationNumber: number
+): Promise<DicomManualLinkResult> {
+  const cfg = getDicomServerConfig(db)
+  if (!cfg) return { success: false, error: 'DICOM server is not configured.' }
+
+  const unresolved = db
+    .prepare('SELECT * FROM dicom_unresolved_studies WHERE id = ?')
+    .get(unresolvedId) as DicomUnresolvedStudy | undefined
+  if (!unresolved) return { success: false, error: 'Unresolved DICOM study was not found.' }
+  if (!unresolved.orthanc_study_id) {
+    return { success: false, error: 'This unresolved item has no Orthanc study ID to link.' }
+  }
+
+  const student = db.prepare(`
+    SELECT student_id
+    FROM students
+    WHERE student_id = ? AND module_code = ?
+  `).get(studentId, moduleCode) as { student_id: string } | undefined
+  if (!student) {
+    return { success: false, error: 'Target student/module was not found in the imported student list.' }
+  }
+
+  let study: OrthancStudyDetails
+  try {
+    study = await orthancGet<OrthancStudyDetails>(
+      cfg.orthanc_base_url,
+      `/studies/${encodeURIComponent(unresolved.orthanc_study_id)}`
+    )
+  } catch (err) {
+    return { success: false, error: `Failed to inspect Orthanc study: ${String(err)}` }
+  }
+
+  const studyInstanceUid = unresolved.study_instance_uid ?? study.MainDicomTags?.StudyInstanceUID ?? null
+  if (!studyInstanceUid) {
+    return { success: false, error: 'StudyInstanceUID is missing; this study cannot be linked.' }
+  }
+
+  const duplicate = db.prepare(`
+    SELECT *
+    FROM dicom_study_links
+    WHERE study_instance_uid = ? OR orthanc_study_id = ?
+    LIMIT 1
+  `).get(studyInstanceUid, unresolved.orthanc_study_id) as DicomStudyLink | undefined
+  if (duplicate) {
+    return {
+      success: false,
+      error: `This DICOM study is already linked to ${duplicate.student_id} ${duplicate.module_code} Stn ${duplicate.station_number}.`
+    }
+  }
+
+  const summary = await getStudySeriesSummary(cfg.orthanc_base_url, study)
+  const previewResult = await getDicomStudyPreviews(db, unresolved.orthanc_study_id, 2)
+  const previewCount = previewResult.previews.filter((preview) => Boolean(preview.dataUrl)).length
+  const previewError = previewResult.error ?? (previewCount < 2 ? `Only ${previewCount} preview image(s) available.` : null)
+  const importedAt = new Date().toISOString()
+  const patientId =
+    unresolved.patient_id ??
+    study.PatientMainDicomTags?.PatientID ??
+    study.MainDicomTags?.PatientID ??
+    'UNKNOWN'
+
+  const insert = db.prepare(`
+    INSERT INTO dicom_study_links
+      (student_id, student_short_id, module_code, station_number, patient_id,
+       study_instance_uid, orthanc_study_id, study_description, study_date, modality,
+       series_count, instance_count, ohif_url, imported_at, preview_count,
+       preview_error, preview_checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const result = insert.run(
+    studentId,
+    studentId.slice(-6),
+    moduleCode,
+    stationNumber,
+    patientId,
+    studyInstanceUid,
+    unresolved.orthanc_study_id,
+    study.MainDicomTags?.StudyDescription ?? null,
+    study.MainDicomTags?.StudyDate ?? null,
+    summary.modality,
+    summary.seriesCount,
+    summary.instanceCount,
+    buildOhifStudyUrl(cfg.ohif_base_url, studyInstanceUid),
+    importedAt,
+    previewCount,
+    previewError,
+    importedAt
+  )
+
+  db.prepare('DELETE FROM dicom_unresolved_studies WHERE id = ?').run(unresolvedId)
+  const link = rowToStudyLink(
+    db.prepare('SELECT * FROM dicom_study_links WHERE id = ?').get(Number(result.lastInsertRowid))
+  )
+
+  return { success: true, link }
+}
+
+export function unlinkDicomStudyLink(
+  db: Database.Database,
+  linkId: number,
+  restoreUnresolved: boolean
+): DicomUnlinkResult {
+  const link = db.prepare('SELECT * FROM dicom_study_links WHERE id = ?').get(linkId) as DicomStudyLink | undefined
+  if (!link) return { success: false, error: 'DICOM link was not found.' }
+
+  db.prepare('DELETE FROM dicom_study_links WHERE id = ?').run(linkId)
+
+  if (!restoreUnresolved) return { success: true }
+
+  const restored = insertUnresolved(
+    db,
+    null,
+    link.orthanc_study_id,
+    link.patient_id,
+    link.study_instance_uid,
+    `Manually unlinked from ${link.student_id} ${link.module_code} Stn ${link.station_number}`,
+    {
+      study_description: link.study_description,
+      study_date: link.study_date,
+      modality: link.modality,
+      series_count: link.series_count,
+      instance_count: link.instance_count
+    }
+  )
+
+  return { success: true, restored_unresolved: restored }
 }
 
 export async function syncDicomStudies(

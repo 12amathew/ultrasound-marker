@@ -29,7 +29,7 @@ import {
   saveDynamicConsensus,
   resolveModuleAlias
 } from '../db/queries'
-import { importCsv } from '../ipc/csvImport'
+import { importCsv, previewStudentCsv } from '../ipc/csvImport'
 import { runFileSort, runFindConclusions } from '../ipc/fileSorter'
 import { runImageAudit } from '../ipc/imageAudit'
 import { exportMarks, importMarks } from '../ipc/marksSync'
@@ -47,10 +47,14 @@ import {
   getDicomServerConfig,
   getDicomStudyPreview,
   getDicomStudyPreviews,
+  getDicomUnresolvedStudyDetails,
   getRecentDicomUnresolved,
+  linkUnresolvedDicomStudyToStation,
+  refreshDicomLinkPreviewState,
   saveDicomServerConfig,
   syncDicomStudies,
   testOrthancConnection,
+  unlinkDicomStudyLink,
   uploadDicomFolderToOrthanc
 } from '../ipc/dicom'
 import type { AppUpdateStatus, DicomServerConfig, ModuleProgress } from '../types/ipc'
@@ -486,6 +490,10 @@ function registerIpcHandlers(): void {
     return importCsv(getDb(), filePath)
   })
 
+  ipcMain.handle('csv:previewStudents', (_e, filePath: string) => {
+    return previewStudentCsv(getDb(), filePath)
+  })
+
   // ── File Sorter ────────────────────────────────────────────────────────────
 
   ipcMain.handle('filesorter:run', (_e, sourcePath: string, targetRoot: string) => {
@@ -783,6 +791,37 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('dicom:getUnresolved', (_e, limit?: number) => {
     return getRecentDicomUnresolved(getDb(), limit ?? 100)
+  })
+
+  ipcMain.handle('dicom:getUnresolvedDetails', (_e, unresolved_id: number) => {
+    return getDicomUnresolvedStudyDetails(getDb(), unresolved_id)
+  })
+
+  ipcMain.handle(
+    'dicom:linkUnresolvedToStation',
+    (
+      _e,
+      unresolved_id: number,
+      student_id: string,
+      module_code: string,
+      station_number: number
+    ) => {
+      return linkUnresolvedDicomStudyToStation(
+        getDb(),
+        unresolved_id,
+        student_id,
+        module_code,
+        station_number
+      )
+    }
+  )
+
+  ipcMain.handle('dicom:unlinkStudyLink', (_e, link_id: number, restore_unresolved: boolean) => {
+    return unlinkDicomStudyLink(getDb(), link_id, restore_unresolved)
+  })
+
+  ipcMain.handle('dicom:refreshLinkPreviewState', (_e, link_id: number) => {
+    return refreshDicomLinkPreviewState(getDb(), link_id)
   })
 
   ipcMain.handle(
