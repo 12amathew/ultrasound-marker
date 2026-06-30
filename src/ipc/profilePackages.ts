@@ -10,6 +10,55 @@ import {
   type ProfileConfig
 } from '../db/queries'
 
+interface PackagedDicomLink {
+  student_id: string
+  student_short_id: string
+  module_code: string
+  station_number: number
+  patient_id: string
+  study_instance_uid: string
+  orthanc_study_id: string
+  study_description: string | null
+  study_date: string | null
+  modality: string | null
+  series_count: number
+  instance_count: number
+  ohif_url: string
+  imported_at: string
+  preview_count: number | null
+  preview_error: string | null
+  preview_checked_at: string | null
+}
+
+interface PackagedReferenceDicomLink {
+  profile_id?: string
+  module_code: string
+  station_number: number
+  slot: 1 | 2
+  patient_id: string
+  study_instance_uid: string
+  orthanc_study_id: string
+  study_description: string | null
+  study_date: string | null
+  modality: string | null
+  series_count: number
+  instance_count: number
+  ohif_url: string
+  linked_at: string
+  preview_count: number | null
+  preview_error: string | null
+  preview_checked_at: string | null
+}
+
+interface DicomLinksPackage {
+  format_version: 1
+  exported_at: string
+  orthanc_base_url: string | null
+  ohif_base_url: string | null
+  links: PackagedDicomLink[]
+  reference_links?: PackagedReferenceDicomLink[]
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -92,6 +141,7 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
     db.prepare('DELETE FROM profile_students WHERE profile_id = ?').run(profileId)
     db.prepare('DELETE FROM reference_assets WHERE profile_id = ?').run(profileId)
     db.prepare('DELETE FROM station_form_fields WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM dicom_station_mappings WHERE profile_id = ?').run(profileId)
     db.prepare('DELETE FROM assessment_stations WHERE profile_id = ?').run(profileId)
     db.prepare('DELETE FROM assessment_module_aliases WHERE profile_id = ?').run(profileId)
     db.prepare('DELETE FROM assessment_modules WHERE profile_id = ?').run(profileId)
@@ -131,6 +181,11 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
       INSERT OR IGNORE INTO examiner_module_assignments (profile_id, examiner_name, module_code)
       VALUES (?, ?, ?)
     `)
+    const insertDicomStationMapping = db.prepare(`
+      INSERT INTO dicom_station_mappings
+        (profile_id, module_code, source_station_number, target_station_number)
+      VALUES (?, ?, ?, ?)
+    `)
 
     cfg.modules.forEach((mod, moduleIndex) => {
       const code = cleanCode(mod.code)
@@ -138,6 +193,7 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
       insertModule.run(profileId, code, mod.name.trim() || code, moduleIndex, ts, ts)
       const aliases = new Set([code, ...(mod.aliases ?? []).map(cleanCode).filter(Boolean)])
       for (const alias of aliases) insertAlias.run(profileId, code, alias)
+      const stationNumbers = new Set(mod.stations.map((station) => Number(station.station_number)))
       mod.stations.forEach((station, stationIndex) => {
         const stationNumber = Number(station.station_number)
         insertStation.run(
@@ -175,6 +231,25 @@ export function saveProfileConfig(db: Database.Database, cfg: ProfileConfig): Pr
           )
         })
       })
+      const mappedSources = new Set<number>()
+      for (const mapping of mod.dicom_station_mappings ?? []) {
+        const sourceStationNumber = Number(mapping.source_station_number)
+        const targetStationNumber = Number(mapping.target_station_number)
+        if (!Number.isInteger(sourceStationNumber) || sourceStationNumber <= 0) {
+          throw new Error(`${code} DICOM source station must be a positive whole number.`)
+        }
+        if (!Number.isInteger(targetStationNumber) || targetStationNumber <= 0) {
+          throw new Error(`${code} DICOM target station must be a positive whole number.`)
+        }
+        if (mappedSources.has(sourceStationNumber)) {
+          throw new Error(`${code} DICOM source station ${sourceStationNumber} is mapped more than once.`)
+        }
+        if (!stationNumbers.has(targetStationNumber)) {
+          throw new Error(`${code} DICOM source station ${sourceStationNumber} maps to missing Station ${targetStationNumber}.`)
+        }
+        mappedSources.add(sourceStationNumber)
+        insertDicomStationMapping.run(profileId, code, sourceStationNumber, targetStationNumber)
+      }
     })
 
     cfg.students.forEach((student) => {
@@ -330,6 +405,54 @@ export async function exportProfilePackage(db: Database.Database, outputPath: st
     }
   }
 
+  const dicomCfg = db
+    .prepare('SELECT orthanc_base_url, ohif_base_url FROM dicom_server_config WHERE id = 1')
+    .get() as { orthanc_base_url: string; ohif_base_url: string } | undefined
+  const dicomLinks = db
+    .prepare(
+      `SELECT dl.student_id, dl.student_short_id, dl.module_code, dl.station_number,
+              dl.patient_id, dl.study_instance_uid, dl.orthanc_study_id,
+              dl.study_description, dl.study_date, dl.modality,
+              dl.series_count, dl.instance_count, dl.ohif_url, dl.imported_at,
+              dl.preview_count, dl.preview_error, dl.preview_checked_at
+       FROM dicom_study_links dl
+       JOIN student_enrollments se
+        ON se.student_id = dl.student_id
+       JOIN assessment_stations st
+        ON st.profile_id = se.profile_id
+       WHERE se.profile_id = ?
+        AND se.module_code = dl.module_code
+        AND st.module_code = dl.module_code
+        AND st.station_number = dl.station_number
+       ORDER BY dl.module_code, dl.station_number, dl.student_id, dl.imported_at`
+    )
+    .all(cfg.profile.id) as PackagedDicomLink[]
+  const referenceDicomLinks = db
+    .prepare(
+      `SELECT rdl.module_code, rdl.station_number, rdl.slot,
+              rdl.patient_id, rdl.study_instance_uid, rdl.orthanc_study_id,
+              rdl.study_description, rdl.study_date, rdl.modality,
+              rdl.series_count, rdl.instance_count, rdl.ohif_url, rdl.linked_at,
+              rdl.preview_count, rdl.preview_error, rdl.preview_checked_at
+       FROM reference_dicom_links rdl
+       JOIN assessment_stations st
+        ON st.profile_id = rdl.profile_id
+       AND st.module_code = rdl.module_code
+       AND st.station_number = rdl.station_number
+       WHERE rdl.profile_id = ?
+       ORDER BY rdl.module_code, rdl.station_number, rdl.slot`
+    )
+    .all(cfg.profile.id) as PackagedReferenceDicomLink[]
+  const dicomPackage: DicomLinksPackage = {
+    format_version: 1,
+    exported_at: nowIso(),
+    orthanc_base_url: dicomCfg?.orthanc_base_url ?? null,
+    ohif_base_url: dicomCfg?.ohif_base_url ?? null,
+    links: dicomLinks,
+    reference_links: referenceDicomLinks
+  }
+  zip.file('dicom-links.json', JSON.stringify(dicomPackage, null, 2))
+
   const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
   writeFileSync(outputPath, bytes)
 }
@@ -393,6 +516,168 @@ export async function importProfilePackage(
       INSERT INTO app_config (key, value) VALUES ('reference_images_root', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(refsDir)
+  }
+
+  const dicomLinksFile = zip.file('dicom-links.json')
+  if (dicomLinksFile) {
+    const payload = JSON.parse(await dicomLinksFile.async('string')) as Partial<DicomLinksPackage>
+    if (payload.orthanc_base_url && payload.ohif_base_url) {
+      db.prepare(`
+        INSERT INTO dicom_server_config (id, orthanc_base_url, ohif_base_url, configured_at)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          orthanc_base_url = excluded.orthanc_base_url,
+          ohif_base_url = excluded.ohif_base_url,
+          configured_at = excluded.configured_at
+      `).run(payload.orthanc_base_url, payload.ohif_base_url, nowIso())
+    }
+
+    const links = Array.isArray(payload.links) ? payload.links : []
+    const referenceLinks = Array.isArray(payload.reference_links) ? payload.reference_links : []
+    const tx = db.transaction(() => {
+      db.prepare(`
+        DELETE FROM dicom_study_links
+        WHERE EXISTS (
+          SELECT 1
+          FROM student_enrollments se
+          JOIN assessment_stations st
+            ON st.profile_id = se.profile_id
+           AND st.module_code = se.module_code
+          WHERE se.profile_id = ?
+            AND se.student_id = dicom_study_links.student_id
+            AND se.module_code = dicom_study_links.module_code
+            AND st.station_number = dicom_study_links.station_number
+        )
+      `).run(cfg.profile.id)
+
+      const insertLink = db.prepare(`
+        INSERT INTO dicom_study_links
+          (student_id, student_short_id, module_code, station_number, patient_id,
+           study_instance_uid, orthanc_study_id, study_description, study_date, modality,
+           series_count, instance_count, ohif_url, imported_at, preview_count,
+           preview_error, preview_checked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(student_id, module_code, station_number, study_instance_uid)
+        DO UPDATE SET
+          student_short_id = excluded.student_short_id,
+          patient_id = excluded.patient_id,
+          orthanc_study_id = excluded.orthanc_study_id,
+          study_description = excluded.study_description,
+          study_date = excluded.study_date,
+          modality = excluded.modality,
+          series_count = excluded.series_count,
+          instance_count = excluded.instance_count,
+          ohif_url = excluded.ohif_url,
+          imported_at = excluded.imported_at,
+          preview_count = excluded.preview_count,
+          preview_error = excluded.preview_error,
+          preview_checked_at = excluded.preview_checked_at
+      `)
+
+      for (const link of links) {
+        if (!link.student_id || !link.module_code || !link.station_number || !link.study_instance_uid || !link.orthanc_study_id) {
+          continue
+        }
+        const targetExists = db.prepare(`
+          SELECT 1
+          FROM student_enrollments se
+          JOIN assessment_stations st
+            ON st.profile_id = se.profile_id
+           AND st.module_code = se.module_code
+          WHERE se.profile_id = ?
+            AND se.student_id = ?
+            AND se.module_code = ?
+            AND st.station_number = ?
+          LIMIT 1
+        `).get(cfg.profile.id, link.student_id, link.module_code, link.station_number)
+        if (!targetExists) continue
+
+        db.prepare(`
+          DELETE FROM dicom_study_links
+          WHERE (study_instance_uid = ? OR orthanc_study_id = ?)
+            AND NOT (student_id = ? AND module_code = ? AND station_number = ?)
+        `).run(
+          link.study_instance_uid,
+          link.orthanc_study_id,
+          link.student_id,
+          link.module_code,
+          link.station_number
+        )
+        insertLink.run(
+          link.student_id,
+          link.student_short_id || link.student_id.slice(-6),
+          link.module_code,
+          link.station_number,
+          link.patient_id || 'UNKNOWN',
+          link.study_instance_uid,
+          link.orthanc_study_id,
+          link.study_description ?? null,
+          link.study_date ?? null,
+          link.modality ?? null,
+          link.series_count ?? 0,
+          link.instance_count ?? 0,
+          link.ohif_url || '',
+          link.imported_at || nowIso(),
+          link.preview_count ?? null,
+          link.preview_error ?? null,
+          link.preview_checked_at ?? null
+        )
+        db.prepare(`
+          DELETE FROM dicom_unresolved_studies
+          WHERE orthanc_study_id = ? OR study_instance_uid = ?
+        `).run(link.orthanc_study_id, link.study_instance_uid)
+      }
+
+      db.prepare('DELETE FROM reference_dicom_links WHERE profile_id = ?').run(cfg.profile.id)
+      const insertReferenceLink = db.prepare(`
+        INSERT INTO reference_dicom_links
+          (profile_id, module_code, station_number, slot, patient_id,
+           study_instance_uid, orthanc_study_id, study_description, study_date,
+           modality, series_count, instance_count, ohif_url, linked_at,
+           preview_count, preview_error, preview_checked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
+      for (const link of referenceLinks) {
+        if (
+          !link.module_code ||
+          !link.station_number ||
+          (link.slot !== 1 && link.slot !== 2) ||
+          !link.study_instance_uid ||
+          !link.orthanc_study_id
+        ) {
+          continue
+        }
+        const targetExists = db.prepare(`
+          SELECT 1
+          FROM assessment_stations
+          WHERE profile_id = ? AND module_code = ? AND station_number = ?
+          LIMIT 1
+        `).get(cfg.profile.id, link.module_code, link.station_number)
+        if (!targetExists) continue
+
+        insertReferenceLink.run(
+          cfg.profile.id,
+          link.module_code,
+          link.station_number,
+          link.slot,
+          link.patient_id || 'UNKNOWN',
+          link.study_instance_uid,
+          link.orthanc_study_id,
+          link.study_description ?? null,
+          link.study_date ?? null,
+          link.modality ?? null,
+          link.series_count ?? 0,
+          link.instance_count ?? 0,
+          link.ohif_url || '',
+          link.linked_at || nowIso(),
+          link.preview_count ?? null,
+          link.preview_error ?? null,
+          link.preview_checked_at ?? null
+        )
+      }
+    })
+    tx()
   }
 
   return { success: true }

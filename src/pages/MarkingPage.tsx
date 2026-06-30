@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
+import DicomPreviewStack from '../components/DicomPreviewStack'
 import CandidateInstructionsPanel from '../components/CandidateInstructionsPanel'
-import type { DicomStudyLink, DicomStudyPreview, FieldResponseInput, StationFormField } from '../types/ipc'
+import type { DicomStudyLink, FieldResponseInput, ReferenceImages, StationFormField } from '../types/ipc'
 
 type MarkValue = number | null
 
@@ -10,11 +11,6 @@ interface StudentImages {
   img1Path: string | null
   img2Path: string | null
   conclusionPath: string | null
-}
-
-interface RefImages {
-  img1Path: string | null
-  img2Path: string | null
 }
 
 export default function MarkingPage(): React.JSX.Element {
@@ -44,15 +40,18 @@ export default function MarkingPage(): React.JSX.Element {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [studentImages, setStudentImages] = useState<StudentImages>({ img1Path: null, img2Path: null, conclusionPath: null })
-  const [refImages, setRefImages] = useState<RefImages>({ img1Path: null, img2Path: null })
+  const [refImages, setRefImages] = useState<ReferenceImages>({
+    img1Path: null,
+    img2Path: null,
+    img1DicomLink: null,
+    img2DicomLink: null
+  })
   const [studentImg1Data, setStudentImg1Data] = useState<string | null>(null)
   const [studentImg2Data, setStudentImg2Data] = useState<string | null>(null)
   const [refImg1Data, setRefImg1Data] = useState<string | null>(null)
   const [refImg2Data, setRefImg2Data] = useState<string | null>(null)
   const [conclusionData, setConclusionData] = useState<string | null>(null)
   const [dicomLinks, setDicomLinks] = useState<DicomStudyLink[]>([])
-  const [dicomPreviews, setDicomPreviews] = useState<DicomStudyPreview[]>([])
-  const [dicomPreviewError, setDicomPreviewError] = useState<string | null>(null)
   const [imagesLoading, setImagesLoading] = useState(false)
 
   const [showingStudentImg, setShowingStudentImg] = useState<1 | 2>(1)
@@ -85,10 +84,8 @@ export default function MarkingPage(): React.JSX.Element {
     setRefImg2Data(null)
     setConclusionData(null)
     setDicomLinks([])
-    setDicomPreviews([])
-    setDicomPreviewError(null)
     setStudentImages({ img1Path: null, img2Path: null, conclusionPath: null })
-    setRefImages({ img1Path: null, img2Path: null })
+    setRefImages({ img1Path: null, img2Path: null, img1DicomLink: null, img2DicomLink: null })
   }
 
   async function loadExistingMarks(s: { student_id: string; full_name: string }): Promise<void> {
@@ -123,31 +120,35 @@ export default function MarkingPage(): React.JSX.Element {
         window.api.getDicomLinksForStation(s.student_id, c.module_code, c.station_number)
       ])
       const hasDicomStudy = links.length > 0
-      const activeLink = links[0] ?? null
       setStudentImages(imgs)
       setRefImages(refs)
       setDicomLinks(links)
-      const [reads, previewResult] = await Promise.all([
+      const splitReferenceStudyId =
+        refs.img1DicomLink &&
+        (!refs.img2DicomLink || refs.img2DicomLink.orthanc_study_id === refs.img1DicomLink.orthanc_study_id)
+          ? refs.img1DicomLink.orthanc_study_id
+          : null
+      const [reads, splitRefPreview, ref1Preview, ref2Preview] = await Promise.all([
         Promise.allSettled([
           !hasDicomStudy && imgs.img1Path ? window.api.readImageFile(imgs.img1Path) : Promise.resolve(null),
           !hasDicomStudy && imgs.img2Path ? window.api.readImageFile(imgs.img2Path) : Promise.resolve(null),
-          refs.img1Path ? window.api.readImageFile(refs.img1Path) : Promise.resolve(null),
-          refs.img2Path ? window.api.readImageFile(refs.img2Path) : Promise.resolve(null),
+          !refs.img1DicomLink && refs.img1Path ? window.api.readImageFile(refs.img1Path) : Promise.resolve(null),
+          !refs.img2DicomLink && refs.img2Path ? window.api.readImageFile(refs.img2Path) : Promise.resolve(null),
           imgs.conclusionPath && c.has_conclusion
             ? window.api.readImageFile(imgs.conclusionPath)
             : Promise.resolve(null)
         ]),
-        activeLink ? window.api.getDicomStudyPreviews(activeLink.orthanc_study_id, 2) : Promise.resolve(null)
+        splitReferenceStudyId ? window.api.getDicomStudyPreviews(splitReferenceStudyId, 2) : Promise.resolve(null),
+        !splitReferenceStudyId && refs.img1DicomLink ? window.api.getDicomStudyPreviews(refs.img1DicomLink.orthanc_study_id, 1) : Promise.resolve(null),
+        !splitReferenceStudyId && refs.img2DicomLink ? window.api.getDicomStudyPreviews(refs.img2DicomLink.orthanc_study_id, 1) : Promise.resolve(null)
       ])
       const val = (r: PromiseSettledResult<string | null>): string | null =>
         r.status === 'fulfilled' ? r.value : null
       setStudentImg1Data(val(reads[0]))
       setStudentImg2Data(val(reads[1]))
-      setRefImg1Data(val(reads[2]))
-      setRefImg2Data(val(reads[3]))
+      setRefImg1Data(splitRefPreview?.previews[0]?.dataUrl ?? ref1Preview?.previews[0]?.dataUrl ?? val(reads[2]))
+      setRefImg2Data(splitRefPreview?.previews[1]?.dataUrl ?? ref2Preview?.previews[0]?.dataUrl ?? val(reads[3]))
       setConclusionData(val(reads[4]))
-      setDicomPreviews(previewResult?.previews ?? [])
-      setDicomPreviewError(previewResult?.error ?? null)
     } catch (err) {
       console.error('Image loading failed:', err)
     } finally {
@@ -290,7 +291,9 @@ export default function MarkingPage(): React.JSX.Element {
   const currentStudentData = showingStudentImg === 1 ? studentImg1Data : studentImg2Data
   const currentRefData = showingRefImg === 1 ? refImg1Data : refImg2Data
   const activeDicomLink = dicomLinks[0] ?? null
-  const currentDicomPreview = dicomPreviews[showingStudentImg - 1] ?? null
+  const activeReferenceDicomLink = showingRefImg === 1
+    ? refImages.img1DicomLink
+    : refImages.img2DicomLink ?? (refImg2Data ? refImages.img1DicomLink : null)
 
   if (loading) {
     return (
@@ -346,27 +349,6 @@ export default function MarkingPage(): React.JSX.Element {
                 <span className="text-xs text-slate-400 font-mono truncate" title={activeDicomLink.patient_id}>
                   {activeDicomLink.patient_id}
                 </span>
-                <button
-                  onClick={() => setShowingStudentImg(1)}
-                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors ${
-                    showingStudentImg === 1
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  Image 1
-                </button>
-                <button
-                  onClick={() => setShowingStudentImg(2)}
-                  disabled={dicomPreviews.length < 2}
-                  className={`px-3 py-1 rounded-lg text-sm font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                    showingStudentImg === 2
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  Image 2
-                </button>
                 <div className="flex-1" />
                 <button
                   onClick={() => window.open(activeDicomLink.ohif_url, '_blank')}
@@ -375,17 +357,11 @@ export default function MarkingPage(): React.JSX.Element {
                   Open OHIF
                 </button>
               </div>
-              <ImageViewer
-                dataUrl={currentDicomPreview?.dataUrl ?? null}
-                label={`DICOM Image ${showingStudentImg}`}
+              <DicomPreviewStack
+                orthancStudyId={activeDicomLink.orthanc_study_id}
+                label={`DICOM ${activeDicomLink.patient_id}`}
                 className="flex-1 rounded-xl"
-                loading={imagesLoading}
               />
-              {dicomPreviewError && (
-                <p className="text-xs text-amber-600">
-                  Preview unavailable: {dicomPreviewError}. Use Open OHIF for the full study.
-                </p>
-              )}
               {dicomLinks.length > 1 && (
                 <p className="text-xs text-amber-600">
                   Multiple DICOM studies are linked to this station. The newest link is shown.
@@ -454,13 +430,31 @@ export default function MarkingPage(): React.JSX.Element {
             >
               REF 2
             </button>
+            <div className="flex-1" />
+            {activeReferenceDicomLink && (
+              <button
+                onClick={() => window.open(activeReferenceDicomLink.ohif_url, '_blank')}
+                className="px-3 py-1 rounded-lg text-xs font-semibold border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
+              >
+                Open OHIF
+              </button>
+            )}
           </div>
-          <ImageViewer
-            dataUrl={currentRefData}
-            label={`REF_${ctx.module_code}_S${ctx.station_number}_IMG${showingRefImg}`}
-            className="flex-1 rounded-xl"
-            loading={imagesLoading}
-          />
+          {activeReferenceDicomLink ? (
+            <DicomPreviewStack
+              orthancStudyId={activeReferenceDicomLink.orthanc_study_id}
+              label={`REF_${ctx.module_code}_S${ctx.station_number}_IMG${showingRefImg}`}
+              initialIndex={showingRefImg - 1}
+              className="flex-1 rounded-xl"
+            />
+          ) : (
+            <ImageViewer
+              dataUrl={currentRefData}
+              label={`REF_${ctx.module_code}_S${ctx.station_number}_IMG${showingRefImg}`}
+              className="flex-1 rounded-xl"
+              loading={imagesLoading}
+            />
+          )}
         </div>
       </div>
 

@@ -99,7 +99,50 @@ const api = {
   exportResults: () => ipcRenderer.invoke('export:results'),
 
   // Logs
-  getFileSortLog: () => ipcRenderer.invoke('log:getFileSortLog')
+  getFileSortLog: () => ipcRenderer.invoke('log:getFileSortLog'),
+
+  // Assessment profiles
+  deleteProfile: (profileId: string) => ipcRenderer.invoke('profiles:delete', profileId),
+
+  // DICOM / Orthanc
+  getDicomConfig: () => ipcRenderer.invoke('dicom:getConfig'),
+  saveDicomConfig: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:saveConfig', cfg),
+  testDicomConnection: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:testConnection', cfg),
+  uploadDicomFolder: (cfg: { orthanc_base_url: string; ohif_base_url: string }, folderPath: string) =>
+    ipcRenderer.invoke('dicom:uploadFolder', cfg, folderPath),
+  prepareDicomExportFolder: (folderPath: string) =>
+    ipcRenderer.invoke('dicom:prepareUploadExportFolder', folderPath),
+  uploadPreparedDicomExportFolder: (
+    cfg: { orthanc_base_url: string; ohif_base_url: string },
+    folderPath: string,
+    validGroupKeys: string[]
+  ) => ipcRenderer.invoke('dicom:uploadPreparedExportFolder', cfg, folderPath, validGroupKeys),
+  syncDicomStudies: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
+    ipcRenderer.invoke('dicom:sync', cfg),
+  getDicomLinksForStation: (
+    student_id: string,
+    module_code: string,
+    station_number: number
+  ) => ipcRenderer.invoke('dicom:getLinksForStation', student_id, module_code, station_number),
+  getDicomStudyPreview: (orthanc_study_id: string) =>
+    ipcRenderer.invoke('dicom:getStudyPreview', orthanc_study_id),
+  getDicomStudyPreviews: (orthanc_study_id: string, limit?: number) =>
+    ipcRenderer.invoke('dicom:getStudyPreviews', orthanc_study_id, limit),
+  getDicomUnresolved: (limit?: number) => ipcRenderer.invoke('dicom:getUnresolved', limit),
+  getDicomUnresolvedDetails: (unresolved_id: number) =>
+    ipcRenderer.invoke('dicom:getUnresolvedDetails', unresolved_id),
+  linkUnresolvedDicomToStation: (
+    unresolved_id: number,
+    student_id: string,
+    module_code: string,
+    station_number: number
+  ) => ipcRenderer.invoke('dicom:linkUnresolvedToStation', unresolved_id, student_id, module_code, station_number),
+  unlinkDicomStudyLink: (link_id: number, restore_unresolved: boolean) =>
+    ipcRenderer.invoke('dicom:unlinkStudyLink', link_id, restore_unresolved),
+  refreshDicomLinkPreviewState: (link_id: number) =>
+    ipcRenderer.invoke('dicom:refreshLinkPreviewState', link_id)
 }
 
 if (process.contextIsolated) {
