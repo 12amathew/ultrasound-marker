@@ -130,6 +130,18 @@ export function initSchema(db: Database.Database): void {
         REFERENCES assessment_modules(profile_id, code) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS dicom_station_mappings (
+      profile_id             TEXT NOT NULL,
+      module_code            TEXT NOT NULL,
+      source_station_number  INTEGER NOT NULL CHECK(source_station_number > 0),
+      target_station_number  INTEGER NOT NULL CHECK(target_station_number > 0),
+      PRIMARY KEY(profile_id, module_code, source_station_number),
+      FOREIGN KEY(profile_id, module_code)
+        REFERENCES assessment_modules(profile_id, code) ON DELETE CASCADE,
+      FOREIGN KEY(profile_id, module_code, target_station_number)
+        REFERENCES assessment_stations(profile_id, module_code, station_number) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS assessment_stations (
       id                      INTEGER PRIMARY KEY AUTOINCREMENT,
       profile_id              TEXT NOT NULL,
@@ -321,6 +333,29 @@ export function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_dicom_study_links_station
       ON dicom_study_links(student_id, module_code, station_number);
+
+    CREATE TABLE IF NOT EXISTS reference_dicom_links (
+      profile_id            TEXT NOT NULL,
+      module_code           TEXT NOT NULL,
+      station_number        INTEGER NOT NULL,
+      slot                  INTEGER NOT NULL CHECK(slot IN (1, 2)),
+      patient_id            TEXT NOT NULL,
+      study_instance_uid    TEXT NOT NULL,
+      orthanc_study_id      TEXT NOT NULL,
+      study_description     TEXT,
+      study_date            TEXT,
+      modality              TEXT,
+      series_count          INTEGER NOT NULL DEFAULT 0,
+      instance_count        INTEGER NOT NULL DEFAULT 0,
+      ohif_url              TEXT NOT NULL,
+      linked_at             TEXT NOT NULL,
+      preview_count         INTEGER,
+      preview_error         TEXT,
+      preview_checked_at    TEXT,
+      PRIMARY KEY(profile_id, module_code, station_number, slot),
+      FOREIGN KEY(profile_id, module_code, station_number)
+        REFERENCES assessment_stations(profile_id, module_code, station_number) ON DELETE CASCADE
+    );
 
     CREATE TABLE IF NOT EXISTS dicom_unresolved_studies (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,

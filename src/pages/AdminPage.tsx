@@ -5,15 +5,19 @@ import type {
   AuditEntry,
   CsvStudentPreviewResult,
   CsvStudentPreviewRow,
+  DicomPreparedExportResult,
+  DicomPreparedUploadResult,
+  DicomStudyCandidate,
+  DicomStudyCandidateDetails,
   DicomStudyLink,
   DicomStudyPreview,
   DicomSyncResult,
   DicomUnresolvedStudy,
-  DicomUnresolvedStudyDetails,
   DicomUploadResult,
   FileSortResult,
   ImportResult,
   ProfileConfig,
+  ReferenceDicomLink,
   StationFormField
 } from '../types/ipc'
 
@@ -21,6 +25,17 @@ type AdminTab = 'profile' | 'sort' | 'dicom' | 'audit' | 'sync' | 'reset'
 type ProfileModule = ProfileConfig['modules'][number]
 type ProfileStation = ProfileModule['stations'][number]
 type ProfileStudent = ProfileConfig['students'][number]
+
+type ReferenceAuditEntry = {
+  module_code: string
+  module_name: string
+  station_number: number
+  station_label: string
+  img1Path: string | null
+  img2Path: string | null
+  img1DicomLink: ReferenceDicomLink | null
+  img2DicomLink: ReferenceDicomLink | null
+}
 
 type PendingStudentImport = {
   result: CsvStudentPreviewResult
@@ -264,6 +279,7 @@ function SortPanel(): React.JSX.Element {
 
 function AuditPanel(): React.JSX.Element {
   const [entries, setEntries] = useState<AuditEntry[]>([])
+  const [referenceEntries, setReferenceEntries] = useState<ReferenceAuditEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [moduleFilter, setModuleFilter] = useState<string>('ALL')
   const [moduleCodes, setModuleCodes] = useState<string[]>([])
@@ -271,19 +287,45 @@ function AuditPanel(): React.JSX.Element {
   const [linking, setLinking] = useState<{ entry: AuditEntry; slot: 'img1' | 'img2' | 'conclusion' } | null>(null)
   const [linkError, setLinkError] = useState<string | null>(null)
   const [resolverEntry, setResolverEntry] = useState<AuditEntry | null>(null)
+  const [referenceResolver, setReferenceResolver] = useState<{ entry: ReferenceAuditEntry; slot: 1 | 2 } | null>(null)
   const [refreshingLinkId, setRefreshingLinkId] = useState<number | null>(null)
   const [unlinkingLinkId, setUnlinkingLinkId] = useState<number | null>(null)
+  const [linkingReference, setLinkingReference] = useState<{ module_code: string; station_number: number; slot: 1 | 2 } | null>(null)
+  const [unlinkingReference, setUnlinkingReference] = useState<{ module_code: string; station_number: number; slot: 1 | 2 } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const data = await window.api.auditImages()
+    const [data, cfg] = await Promise.all([
+      window.api.auditImages(),
+      window.api.getActiveProfileConfig()
+    ])
     setEntries(data)
+    setModuleCodes(cfg?.modules.map((m) => m.code) ?? [])
+    const refs = cfg
+      ? await Promise.all(
+          cfg.modules.flatMap((mod) =>
+            mod.stations.map(async (station) => {
+              const images = await window.api.getReferenceImages(mod.code, station.station_number)
+              return {
+                module_code: mod.code,
+                module_name: mod.name,
+                station_number: station.station_number,
+                station_label: station.label,
+                img1Path: images.img1Path,
+                img2Path: images.img2Path,
+                img1DicomLink: images.img1DicomLink,
+                img2DicomLink: images.img2DicomLink
+              }
+            })
+          )
+        )
+      : []
+    setReferenceEntries(refs)
     setLoading(false)
   }, [])
 
   React.useEffect(() => {
     load()
-    window.api.getActiveProfileConfig().then((cfg) => setModuleCodes(cfg?.modules.map((m) => m.code) ?? []))
   }, [load])
 
   const filtered = entries.filter((e) => {
@@ -298,6 +340,14 @@ function AuditPanel(): React.JSX.Element {
     partial: entries.filter((e) => entryStatus(e) === 'partial').length,
     missing: entries.filter((e) => entryStatus(e) === 'missing').length
   }
+  const filteredReferences = referenceEntries.filter((entry) =>
+    moduleFilter === 'ALL' || entry.module_code === moduleFilter
+  )
+  const missingReferenceCount = referenceEntries.filter(
+    (entry) =>
+      (!entry.img1Path && !entry.img1DicomLink) ||
+      (!entry.img2Path && !entry.img2DicomLink)
+  ).length
 
   async function handleLink(entry: AuditEntry, slot: 'img1' | 'img2' | 'conclusion'): Promise<void> {
     setLinkError(null)
@@ -323,6 +373,48 @@ function AuditPanel(): React.JSX.Element {
     setLinking(null)
     // Refresh audit to reflect change
     await load()
+  }
+
+  async function handleReferenceLink(entry: ReferenceAuditEntry, slot: 1 | 2): Promise<void> {
+    setLinkError(null)
+    const filePath = await window.api.selectFile([
+      { name: 'Reference images', extensions: ['jpg', 'jpeg', 'png', 'tif', 'tiff'] }
+    ])
+    if (!filePath) return
+
+    setLinkingReference({ module_code: entry.module_code, station_number: entry.station_number, slot })
+    try {
+      const result = await window.api.copyReferenceImage(
+        filePath,
+        entry.module_code,
+        entry.station_number,
+        slot
+      )
+      if (!result?.success) {
+        setLinkError(`Failed to link reference image: ${result?.reason ?? 'Unknown error'}`)
+      }
+      await load()
+    } catch (err) {
+      setLinkError(`Failed to link reference image: ${String(err)}`)
+    } finally {
+      setLinkingReference(null)
+    }
+  }
+
+  async function handleReferenceDicomUnlink(entry: ReferenceAuditEntry, slot: 1 | 2): Promise<void> {
+    setLinkError(null)
+    setUnlinkingReference({ module_code: entry.module_code, station_number: entry.station_number, slot })
+    try {
+      const result = await window.api.unlinkReferenceDicomStudy(entry.module_code, entry.station_number, slot)
+      if (!result?.success) {
+        setLinkError(`Failed to unlink reference DICOM: ${result?.error ?? 'Unknown error'}`)
+      }
+      await load()
+    } catch (err) {
+      setLinkError(`Failed to unlink reference DICOM: ${String(err)}`)
+    } finally {
+      setUnlinkingReference(null)
+    }
   }
 
   async function handleRefreshDicom(link: DicomStudyLink): Promise<void> {
@@ -362,6 +454,11 @@ function AuditPanel(): React.JSX.Element {
     await load()
   }
 
+  async function handleReferenceDicomLinked(): Promise<void> {
+    setReferenceResolver(null)
+    await load()
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {/* Summary bar */}
@@ -396,6 +493,90 @@ function AuditPanel(): React.JSX.Element {
         <FilterChip label="OK" active={statusFilter === 'ok'} onClick={() => setStatusFilter('ok')} colour="green" />
         <FilterChip label="Partial" active={statusFilter === 'partial'} onClick={() => setStatusFilter('partial')} colour="amber" />
         <FilterChip label="Missing" active={statusFilter === 'missing'} onClick={() => setStatusFilter('missing')} colour="red" />
+      </div>
+
+      <div className="border border-slate-200 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-700">Reference image audit</h3>
+            <p className="text-xs text-slate-500">
+              Link reference images from Orthanc DICOM studies, or copy local files into the profile reference folder.
+            </p>
+          </div>
+          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+            missingReferenceCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
+          }`}>
+            {missingReferenceCount} missing
+          </span>
+        </div>
+        {filteredReferences.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-slate-400 text-center">No reference stations match the current module filter.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-white text-slate-500 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2 text-left font-semibold">Module</th>
+                  <th className="px-4 py-2 text-left font-semibold">Station</th>
+                  <th className="px-4 py-2 text-left font-semibold">REF 1</th>
+                  <th className="px-4 py-2 text-left font-semibold">REF 2</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredReferences.map((entry) => (
+                  <tr
+                    key={`${entry.module_code}-${entry.station_number}`}
+                    className={
+                      (!entry.img1Path && !entry.img1DicomLink) || (!entry.img2Path && !entry.img2DicomLink)
+                        ? 'bg-amber-50'
+                        : ''
+                    }
+                  >
+                    <td className="px-4 py-2 font-medium text-slate-700">{entry.module_code}</td>
+                    <td className="px-4 py-2 text-slate-600">
+                      Stn {entry.station_number}
+                      <span className="ml-2 text-xs text-slate-400">{entry.station_label}</span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <ReferenceSlot
+                        value={entry.img1Path}
+                        dicomLink={entry.img1DicomLink}
+                        loading={
+                          (linkingReference?.module_code === entry.module_code &&
+                            linkingReference.station_number === entry.station_number &&
+                            linkingReference.slot === 1) ||
+                          (unlinkingReference?.module_code === entry.module_code &&
+                            unlinkingReference.station_number === entry.station_number &&
+                            unlinkingReference.slot === 1)
+                        }
+                        onLinkDicom={() => setReferenceResolver({ entry, slot: 1 })}
+                        onUnlinkDicom={() => handleReferenceDicomUnlink(entry, 1)}
+                        onLinkFile={() => handleReferenceLink(entry, 1)}
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <ReferenceSlot
+                        value={entry.img2Path}
+                        dicomLink={entry.img2DicomLink}
+                        loading={
+                          (linkingReference?.module_code === entry.module_code &&
+                            linkingReference.station_number === entry.station_number &&
+                            linkingReference.slot === 2) ||
+                          (unlinkingReference?.module_code === entry.module_code &&
+                            unlinkingReference.station_number === entry.station_number &&
+                            unlinkingReference.slot === 2)
+                        }
+                        onLinkDicom={() => setReferenceResolver({ entry, slot: 2 })}
+                        onUnlinkDicom={() => handleReferenceDicomUnlink(entry, 2)}
+                        onLinkFile={() => handleReferenceLink(entry, 2)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Table */}
@@ -489,6 +670,80 @@ function AuditPanel(): React.JSX.Element {
           onLinked={handleDicomLinked}
         />
       )}
+      {referenceResolver && (
+        <ReferenceDicomResolverDialog
+          entry={referenceResolver.entry}
+          slot={referenceResolver.slot}
+          onClose={() => setReferenceResolver(null)}
+          onLinked={handleReferenceDicomLinked}
+        />
+      )}
+    </div>
+  )
+}
+
+function ReferenceSlot({
+  value,
+  dicomLink,
+  loading,
+  onLinkDicom,
+  onUnlinkDicom,
+  onLinkFile
+}: {
+  value: string | null
+  dicomLink: ReferenceDicomLink | null
+  loading: boolean
+  onLinkDicom: () => void
+  onUnlinkDicom: () => void
+  onLinkFile: () => void
+}): React.JSX.Element {
+  const hasLink = Boolean(dicomLink || value)
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`w-2 h-2 rounded-full ${hasLink ? 'bg-green-500' : 'bg-red-400'}`} />
+        {dicomLink ? (
+          <span className="text-xs text-slate-600 truncate max-w-[260px]" title={dicomLink.study_instance_uid}>
+            DICOM {dicomLink.patient_id}
+          </span>
+        ) : value ? (
+          <span className="text-xs text-slate-600 truncate max-w-[260px]" title={value}>
+            {value.split('/').pop()}
+          </span>
+        ) : (
+          <span className="text-xs text-red-600">Missing</span>
+        )}
+      </div>
+      {dicomLink?.preview_error && (
+        <p className="text-[11px] text-amber-700 line-clamp-1" title={dicomLink.preview_error}>
+          {dicomLink.preview_error}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1">
+        <button
+          onClick={onLinkDicom}
+          disabled={loading}
+          className="px-2 py-1 rounded border border-indigo-200 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+        >
+          {loading ? 'Working...' : dicomLink ? 'Replace DICOM' : 'Link DICOM'}
+        </button>
+        {dicomLink && (
+          <button
+            onClick={onUnlinkDicom}
+            disabled={loading}
+            className="px-2 py-1 rounded border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
+          >
+            Unlink DICOM
+          </button>
+        )}
+        <button
+          onClick={onLinkFile}
+          disabled={loading}
+          className="px-2 py-1 rounded border border-slate-300 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+        >
+          {loading ? 'Linking...' : value ? 'Replace file' : 'Link file'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -620,9 +875,9 @@ function DicomResolverDialog({
   onClose: () => void
   onLinked: () => void
 }): React.JSX.Element {
-  const [items, setItems] = useState<DicomUnresolvedStudy[]>([])
-  const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [details, setDetails] = useState<DicomUnresolvedStudyDetails | null>(null)
+  const [items, setItems] = useState<DicomStudyCandidate[]>([])
+  const [selectedStudyId, setSelectedStudyId] = useState<string | null>(null)
+  const [details, setDetails] = useState<DicomStudyCandidateDetails | null>(null)
   const [loadingList, setLoadingList] = useState(true)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [linking, setLinking] = useState(false)
@@ -633,22 +888,26 @@ function DicomResolverDialog({
     setLoadingList(true)
     setError(null)
     try {
-      const rows = await window.api.getDicomUnresolved(500)
+      const rows = await window.api.getDicomStudyCandidates(750, query)
       setItems(rows)
-      setSelectedId(rows[0]?.id ?? null)
+      setSelectedStudyId((current) =>
+        current && rows.some((row) => row.orthanc_study_id === current)
+          ? current
+          : rows[0]?.orthanc_study_id ?? null
+      )
     } catch (err) {
       setError(String(err))
     } finally {
       setLoadingList(false)
     }
-  }, [])
+  }, [query])
 
   React.useEffect(() => {
     loadItems()
   }, [loadItems])
 
   React.useEffect(() => {
-    if (!selectedId) {
+    if (!selectedStudyId) {
       setDetails(null)
       return
     }
@@ -658,7 +917,7 @@ function DicomResolverDialog({
       setLoadingDetails(true)
       setError(null)
       try {
-        const next = await window.api.getDicomUnresolvedDetails(selectedId)
+        const next = await window.api.getDicomStudyCandidateDetails(selectedStudyId)
         if (!cancelled) setDetails(next)
       } catch (err) {
         if (!cancelled) setError(String(err))
@@ -670,29 +929,32 @@ function DicomResolverDialog({
     return () => {
       cancelled = true
     }
-  }, [selectedId])
-
-  const filtered = items.filter((item) => {
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return [
-      item.patient_id,
-      item.study_instance_uid,
-      item.reason,
-      item.orthanc_study_id
-    ].some((value) => value?.toLowerCase().includes(q))
-  })
+  }, [selectedStudyId])
 
   async function linkSelected(): Promise<void> {
-    if (!selectedId) return
+    if (!selectedStudyId) return
     setLinking(true)
     setError(null)
     try {
-      const result = await window.api.linkUnresolvedDicomToStation(
-        selectedId,
+      const currentLink = details?.current_link ?? items.find((item) => item.orthanc_study_id === selectedStudyId)?.current_link ?? null
+      const sameTarget =
+        currentLink?.student_id === entry.student_id &&
+        currentLink?.module_code === entry.module_code &&
+        currentLink?.station_number === entry.station_number
+      const moveExisting = Boolean(currentLink && !sameTarget)
+      if (moveExisting) {
+        const ok = window.confirm(
+          `This DICOM study is currently linked to ${currentLink!.student_id} ${currentLink!.module_code} Station ${currentLink!.station_number}. Move it to ${entry.student_id} ${entry.module_code} Station ${entry.station_number}?`
+        )
+        if (!ok) return
+      }
+
+      const result = await window.api.linkDicomStudyToStation(
+        selectedStudyId,
         entry.student_id,
         entry.module_code,
-        entry.station_number
+        entry.station_number,
+        moveExisting
       )
       if (!result?.success) {
         setError(result?.error ?? 'Failed to link DICOM study.')
@@ -706,13 +968,15 @@ function DicomResolverDialog({
     }
   }
 
-  const raw = parseRawDicomMetadata(details?.unresolved.raw_metadata ?? null)
-  const studyDescription =
-    details?.study_description ?? rawTag(raw, 'MainDicomTags', 'StudyDescription') ?? 'N/A'
-  const studyDate =
-    details?.study_date ?? rawTag(raw, 'MainDicomTags', 'StudyDate') ?? null
-  const modality = details?.modality ?? rawTag(raw, 'MainDicomTags', 'Modality') ?? 'N/A'
-  const selected = details?.unresolved ?? items.find((item) => item.id === selectedId) ?? null
+  const selected = details ?? items.find((item) => item.orthanc_study_id === selectedStudyId) ?? null
+  const studyDescription = selected?.study_description ?? 'N/A'
+  const studyDate = selected?.study_date ?? null
+  const modality = selected?.modality ?? 'N/A'
+  const currentLink = selected?.current_link ?? null
+  const sameTarget =
+    currentLink?.student_id === entry.student_id &&
+    currentLink?.module_code === entry.module_code &&
+    currentLink?.station_number === entry.station_number
 
   return (
     <div className="fixed inset-0 z-40 bg-slate-950/60 flex items-center justify-center p-4">
@@ -745,30 +1009,38 @@ function DicomResolverDialog({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search patient ID, UID, reason"
+                placeholder="Search Patient ID, UID, student, module"
                 className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700"
               />
             </div>
             {loadingList ? (
-              <div className="p-6 text-sm text-slate-400">Loading unresolved studies...</div>
-            ) : filtered.length === 0 ? (
-              <div className="p-6 text-sm text-slate-400">No unresolved DICOM studies match.</div>
+              <div className="p-6 text-sm text-slate-400">Loading DICOM studies from Orthanc...</div>
+            ) : items.length === 0 ? (
+              <div className="p-6 text-sm text-slate-400">No DICOM studies match.</div>
             ) : (
               <div className="overflow-y-auto divide-y divide-slate-100">
-                {filtered.map((item) => (
+                {items.map((item) => (
                   <button
-                    key={item.id}
-                    onClick={() => setSelectedId(item.id)}
+                    key={item.orthanc_study_id}
+                    onClick={() => setSelectedStudyId(item.orthanc_study_id)}
                     className={`w-full text-left px-4 py-3 hover:bg-slate-50 ${
-                      selectedId === item.id ? 'bg-indigo-50' : ''
+                      selectedStudyId === item.orthanc_study_id ? 'bg-indigo-50' : ''
                     }`}
                   >
                     <p className="text-sm font-semibold text-slate-800 truncate">
                       {item.patient_id ?? 'No Patient ID'}
                     </p>
-                    <p className="text-xs text-slate-500 line-clamp-2">{item.reason}</p>
-                    <p className="text-[11px] text-slate-400 mt-1">
-                      {new Date(item.seen_at).toLocaleString()}
+                    {item.current_link ? (
+                      <p className="text-xs text-slate-500 line-clamp-2">
+                        Linked to {item.current_link.student_id} {item.current_link.module_code} Stn {item.current_link.station_number}
+                      </p>
+                    ) : item.unresolved ? (
+                      <p className="text-xs text-amber-700 line-clamp-2">{item.unresolved.reason}</p>
+                    ) : (
+                      <p className="text-xs text-slate-500 line-clamp-2">Unlinked Orthanc study</p>
+                    )}
+                    <p className="text-[11px] text-slate-400 mt-1 font-mono truncate">
+                      {item.study_instance_uid ?? item.orthanc_study_id}
                     </p>
                   </button>
                 ))}
@@ -778,7 +1050,7 @@ function DicomResolverDialog({
 
           <div className="p-5 flex flex-col gap-4 min-h-0 overflow-y-auto">
             {!selected ? (
-              <div className="text-sm text-slate-400">Select an unresolved study to preview it.</div>
+              <div className="text-sm text-slate-400">Select a DICOM study to preview and link it.</div>
             ) : (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
@@ -797,9 +1069,22 @@ function DicomResolverDialog({
                   <MetadataLine label="Study UID" value={selected.study_instance_uid ?? 'N/A'} mono />
                 </div>
 
-                <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
-                  {selected.reason}
-                </div>
+                {currentLink && (
+                  <div className={`rounded-lg px-3 py-2 text-sm ${
+                    sameTarget
+                      ? 'bg-green-50 border border-green-200 text-green-700'
+                      : 'bg-amber-50 border border-amber-200 text-amber-800'
+                  }`}>
+                    {sameTarget
+                      ? 'This study is already linked to this station.'
+                      : `Currently linked to ${currentLink.student_id} ${currentLink.module_code} Station ${currentLink.station_number}. Linking here will move it.`}
+                  </div>
+                )}
+                {selected.unresolved && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
+                    {selected.unresolved.reason}
+                  </div>
+                )}
 
                 {loadingDetails ? (
                   <div className="h-72 flex items-center justify-center text-slate-400">
@@ -828,10 +1113,272 @@ function DicomResolverDialog({
                   </button>
                   <button
                     onClick={linkSelected}
-                    disabled={linking || loadingDetails || !selectedId}
+                    disabled={linking || loadingDetails || !selectedStudyId || sameTarget}
                     className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40"
                   >
-                    {linking ? 'Linking...' : 'Link to station'}
+                    {linking ? 'Linking...' : currentLink && !sameTarget ? 'Move to station' : 'Link to station'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReferenceDicomResolverDialog({
+  entry,
+  slot,
+  onClose,
+  onLinked
+}: {
+  entry: ReferenceAuditEntry
+  slot: 1 | 2
+  onClose: () => void
+  onLinked: () => void
+}): React.JSX.Element {
+  const [items, setItems] = useState<DicomStudyCandidate[]>([])
+  const [selectedStudyId, setSelectedStudyId] = useState<string | null>(null)
+  const [details, setDetails] = useState<DicomStudyCandidateDetails | null>(null)
+  const [loadingList, setLoadingList] = useState(true)
+  const [loadingDetails, setLoadingDetails] = useState(false)
+  const [linking, setLinking] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const existingLink = slot === 1 ? entry.img1DicomLink : entry.img2DicomLink
+
+  const loadItems = useCallback(async () => {
+    setLoadingList(true)
+    setError(null)
+    try {
+      const rows = await window.api.getDicomStudyCandidates(750, query)
+      setItems(rows)
+      setSelectedStudyId((current) =>
+        current && rows.some((row) => row.orthanc_study_id === current)
+          ? current
+          : existingLink?.orthanc_study_id && rows.some((row) => row.orthanc_study_id === existingLink.orthanc_study_id)
+            ? existingLink.orthanc_study_id
+            : rows[0]?.orthanc_study_id ?? null
+      )
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLoadingList(false)
+    }
+  }, [existingLink?.orthanc_study_id, query])
+
+  React.useEffect(() => {
+    loadItems()
+  }, [loadItems])
+
+  React.useEffect(() => {
+    if (!selectedStudyId) {
+      setDetails(null)
+      return
+    }
+
+    let cancelled = false
+    async function loadDetails(): Promise<void> {
+      setLoadingDetails(true)
+      setError(null)
+      try {
+        const next = await window.api.getDicomStudyCandidateDetails(selectedStudyId)
+        if (!cancelled) setDetails(next)
+      } catch (err) {
+        if (!cancelled) setError(String(err))
+      } finally {
+        if (!cancelled) setLoadingDetails(false)
+      }
+    }
+    loadDetails()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedStudyId])
+
+  async function linkSelected(): Promise<void> {
+    if (!selectedStudyId) return
+    setLinking(true)
+    setError(null)
+    try {
+      const previewCount = details?.previews.filter((preview) => Boolean(preview.dataUrl)).length ?? 0
+      const targetSlots: Array<1 | 2> = previewCount >= 2 ? [1, 2] : [slot]
+
+      for (const targetSlot of targetSlots) {
+        const result = await window.api.linkReferenceDicomStudy(
+          selectedStudyId,
+          entry.module_code,
+          entry.station_number,
+          targetSlot
+        )
+        if (!result?.success) {
+          setError(result?.error ?? `Failed to link reference DICOM study to REF ${targetSlot}.`)
+          return
+        }
+      }
+      await onLinked()
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  const selected = details ?? items.find((item) => item.orthanc_study_id === selectedStudyId) ?? null
+  const currentLink = selected?.current_link ?? null
+  const previewCount = details?.previews.filter((preview) => Boolean(preview.dataUrl)).length ?? 0
+  const willSplitReference = previewCount >= 2
+  const bothReferenceSlotsAlreadyLinked =
+    entry.img1DicomLink?.orthanc_study_id === selectedStudyId &&
+    entry.img2DicomLink?.orthanc_study_id === selectedStudyId
+  const sameReference = Boolean(existingLink && existingLink.orthanc_study_id === selectedStudyId)
+  const alreadyLinked = willSplitReference ? bothReferenceSlotsAlreadyLinked : sameReference
+
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-950/60 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-slate-800">Link reference DICOM</h2>
+            <p className="text-sm text-slate-500 truncate">
+              {entry.module_code} Stn {entry.station_number} · REF {slot} · {entry.station_label}
+            </p>
+          </div>
+          <div className="flex-1" />
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-semibold hover:bg-slate-200"
+          >
+            Close
+          </button>
+        </div>
+
+        {error && (
+          <p className="mx-5 mt-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-0 min-h-0 flex-1">
+          <div className="border-r border-slate-200 flex flex-col min-h-0">
+            <div className="p-4 border-b border-slate-200">
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search Patient ID, UID, description"
+                className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700"
+              />
+            </div>
+            {loadingList ? (
+              <div className="p-6 text-sm text-slate-400">Loading DICOM studies from Orthanc...</div>
+            ) : items.length === 0 ? (
+              <div className="p-6 text-sm text-slate-400">No DICOM studies match.</div>
+            ) : (
+              <div className="overflow-y-auto divide-y divide-slate-100">
+                {items.map((item) => (
+                  <button
+                    key={item.orthanc_study_id}
+                    onClick={() => setSelectedStudyId(item.orthanc_study_id)}
+                    className={`w-full text-left px-4 py-3 hover:bg-slate-50 ${
+                      selectedStudyId === item.orthanc_study_id ? 'bg-indigo-50' : ''
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-slate-800 truncate">
+                      {item.patient_id ?? 'No Patient ID'}
+                    </p>
+                    {item.orthanc_study_id === existingLink?.orthanc_study_id ? (
+                      <p className="text-xs text-green-700 line-clamp-2">Currently linked to this reference slot</p>
+                    ) : item.current_link ? (
+                      <p className="text-xs text-slate-500 line-clamp-2">
+                        Also linked to {item.current_link.student_id} {item.current_link.module_code} Stn {item.current_link.station_number}
+                      </p>
+                    ) : item.unresolved ? (
+                      <p className="text-xs text-amber-700 line-clamp-2">{item.unresolved.reason}</p>
+                    ) : (
+                      <p className="text-xs text-slate-500 line-clamp-2">Unlinked Orthanc study</p>
+                    )}
+                    <p className="text-[11px] text-slate-400 mt-1 font-mono truncate">
+                      {item.study_instance_uid ?? item.orthanc_study_id}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="p-5 flex flex-col gap-4 min-h-0 overflow-y-auto">
+            {!selected ? (
+              <div className="text-sm text-slate-400">Select a DICOM study to preview and link it as a reference image.</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <MetadataLine label="Patient ID" value={selected.patient_id ?? 'N/A'} mono />
+                  <MetadataLine label="Study date" value={formatDicomDate(selected.study_date)} />
+                  <MetadataLine label="Description" value={selected.study_description ?? 'N/A'} />
+                  <MetadataLine label="Modality" value={selected.modality ?? 'N/A'} />
+                  <MetadataLine
+                    label="Series / instances"
+                    value={
+                      details?.series_count === null || details?.series_count === undefined
+                        ? 'N/A'
+                        : `${details.series_count} / ${details.instance_count ?? 'N/A'}`
+                    }
+                  />
+                  <MetadataLine label="Study UID" value={selected.study_instance_uid ?? 'N/A'} mono />
+                </div>
+
+                {currentLink && (
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-700">
+                    This study is also linked to {currentLink.student_id} {currentLink.module_code} Station {currentLink.station_number}.
+                  </div>
+                )}
+
+                {loadingDetails ? (
+                  <div className="h-72 flex items-center justify-center text-slate-400">
+                    Loading DICOM preview...
+                  </div>
+                ) : (
+                  <>
+                    <div className={willSplitReference ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : ''}>
+                      <DicomPreviewTile preview={details?.previews[0] ?? null} label={willSplitReference ? 'REF 1 preview' : `REF ${slot} preview`} />
+                      {willSplitReference && (
+                        <DicomPreviewTile preview={details?.previews[1] ?? null} label="REF 2 preview" />
+                      )}
+                    </div>
+                    {willSplitReference && (
+                      <p className="text-xs text-slate-500">
+                        This study has two previewable images, so linking it will populate REF 1 and REF 2.
+                      </p>
+                    )}
+                    {details?.error && (
+                      <p className="text-xs text-amber-700">
+                        Preview warning: {details.error}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                  <button
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={linkSelected}
+                    disabled={linking || loadingDetails || !selectedStudyId || alreadyLinked}
+                    className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40"
+                  >
+                    {linking
+                      ? 'Linking...'
+                      : alreadyLinked
+                        ? 'Already linked'
+                        : willSplitReference
+                          ? 'Link to REF 1 & REF 2'
+                          : `Link to REF ${slot}`}
                   </button>
                 </div>
               </>
@@ -954,6 +1501,8 @@ function ProfilePanel(): React.JSX.Element {
   const [newModuleName, setNewModuleName] = useState('')
   const [showNewStation, setShowNewStation] = useState(false)
   const [newStationNumber, setNewStationNumber] = useState('')
+  const [newDicomSourceStation, setNewDicomSourceStation] = useState('')
+  const [newDicomTargetStation, setNewDicomTargetStation] = useState('')
   const [newFieldType, setNewFieldType] = useState<'score' | 'text' | null>(null)
   const [newFieldLabel, setNewFieldLabel] = useState('')
   const [status, setStatus] = useState<string | null>(null)
@@ -1122,6 +1671,29 @@ function ProfilePanel(): React.JSX.Element {
     setStatus('Active profile changed.')
   }
 
+  async function deleteProfile(): Promise<void> {
+    if (!cfg) return
+    if (profiles.length <= 1) {
+      setError('Cannot delete the only assessment profile. Create or import another profile first.')
+      return
+    }
+    const name = cfg.profile.name || 'this profile'
+    const ok = window.confirm(
+      `Delete assessment profile "${name}"? This removes its modules, stations, students, examiners, and profile marks from this database. Shared image folders and DICOM studies are not deleted.`
+    )
+    if (!ok) return
+
+    setError(null)
+    setStatus(null)
+    try {
+      await window.api.deleteProfile(cfg.profile.id)
+      await load()
+      setStatus(`Deleted profile "${name}".`)
+    } catch (err) {
+      setError(String(err))
+    }
+  }
+
   function addModule(): void {
     if (!cfg) return
     const code = newModuleCode.trim().toUpperCase()
@@ -1147,7 +1719,8 @@ function ProfilePanel(): React.JSX.Element {
           aliases: [code],
           stations: stationNumbers.map((stationNumber) =>
             defaultStation(code, stationNumber, rubricTemplateForStation(stationNumber))
-          )
+          ),
+          dicom_station_mappings: []
         }
       ]
     }
@@ -1202,7 +1775,10 @@ function ProfilePanel(): React.JSX.Element {
     if (!window.confirm(`Delete Station ${stationNumber} from every module in this profile?`)) return
     const nextModules = cfg.modules.map((m) => ({
       ...m,
-      stations: m.stations.filter((s) => s.station_number !== stationNumber)
+      stations: m.stations.filter((s) => s.station_number !== stationNumber),
+      dicom_station_mappings: (m.dicom_station_mappings ?? []).filter(
+        (mapping) => mapping.target_station_number !== stationNumber
+      )
     }))
     update({ ...cfg, modules: nextModules })
     setSelectedStation(nextModules.find((m) => m.code === selectedModule)?.stations[0]?.station_number ?? null)
@@ -1224,6 +1800,67 @@ function ProfilePanel(): React.JSX.Element {
           : m
       )
     })
+  }
+
+  function addDicomStationMapping(): void {
+    if (!cfg || !mod) return
+    const sourceStationNumber = Number(newDicomSourceStation)
+    const targetStationNumber = Number(newDicomTargetStation || mod.stations[0]?.station_number)
+    if (!Number.isInteger(sourceStationNumber) || sourceStationNumber <= 0) {
+      setError('DICOM source station must be a positive whole number.')
+      return
+    }
+    if (!Number.isInteger(targetStationNumber) || targetStationNumber <= 0) {
+      setError('Choose a target station for the DICOM mapping.')
+      return
+    }
+    if (!mod.stations.some((s) => s.station_number === targetStationNumber)) {
+      setError(`Target Station ${targetStationNumber} is not configured for ${mod.code}.`)
+      return
+    }
+    if ((mod.dicom_station_mappings ?? []).some((mapping) => mapping.source_station_number === sourceStationNumber)) {
+      setError(`${mod.code} source Station ${sourceStationNumber} is already mapped.`)
+      return
+    }
+    setError(null)
+    update({
+      ...cfg,
+      modules: cfg.modules.map((m) =>
+        m.code === mod.code
+          ? {
+              ...m,
+              dicom_station_mappings: [
+                ...(m.dicom_station_mappings ?? []),
+                {
+                  source_station_number: sourceStationNumber,
+                  target_station_number: targetStationNumber
+                }
+              ].sort((a, b) => a.source_station_number - b.source_station_number)
+            }
+          : m
+      )
+    })
+    setNewDicomSourceStation('')
+    setNewDicomTargetStation('')
+    setStatus(`DICOM station mapping staged for ${mod.code}. Click Save Profile to persist it.`)
+  }
+
+  function deleteDicomStationMapping(sourceStationNumber: number): void {
+    if (!cfg || !mod) return
+    update({
+      ...cfg,
+      modules: cfg.modules.map((m) =>
+        m.code === mod.code
+          ? {
+              ...m,
+              dicom_station_mappings: (m.dicom_station_mappings ?? []).filter(
+                (mapping) => mapping.source_station_number !== sourceStationNumber
+              )
+            }
+          : m
+      )
+    })
+    setStatus(`DICOM station mapping removed for ${mod.code}. Save profile to apply.`)
   }
 
   function addField(type: 'score' | 'text'): void {
@@ -1535,6 +2172,13 @@ function ProfilePanel(): React.JSX.Element {
             >
               New
             </button>
+            <button
+              onClick={deleteProfile}
+              disabled={profiles.length <= 1}
+              className="px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm font-semibold border border-red-200 disabled:opacity-40"
+            >
+              Delete
+            </button>
           </div>
           {showNewProfile && (
             <div className="mt-2 flex gap-2">
@@ -1704,6 +2348,67 @@ function ProfilePanel(): React.JSX.Element {
                     className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
                   />
                 </label>
+              </div>
+              <div className="border-t border-slate-100 pt-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold uppercase text-slate-500">DICOM station mapping</span>
+                  <span className="text-xs text-slate-400">Source station to app station</span>
+                </div>
+                {(mod.dicom_station_mappings ?? []).length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    {(mod.dicom_station_mappings ?? []).map((mapping) => (
+                      <div
+                        key={mapping.source_station_number}
+                        className="grid grid-cols-[1fr_auto] gap-2 items-center bg-slate-50 rounded-lg px-3 py-2"
+                      >
+                        <span className="text-sm text-slate-700">
+                          Source Station {String(mapping.source_station_number).padStart(2, '0')} maps to Station {mapping.target_station_number}
+                        </span>
+                        <button
+                          onClick={() => deleteDicomStationMapping(mapping.source_station_number)}
+                          className="text-xs text-red-600 font-semibold"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold text-slate-500">Source station</span>
+                    <input
+                      value={newDicomSourceStation}
+                      onChange={(event) => setNewDicomSourceStation(event.target.value.replace(/\D/g, ''))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') addDicomStationMapping()
+                      }}
+                      placeholder="05"
+                      className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold text-slate-500">App station</span>
+                    <select
+                      value={newDicomTargetStation}
+                      onChange={(event) => setNewDicomTargetStation(event.target.value)}
+                      className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
+                    >
+                      <option value="">Choose station</option>
+                      {mod.stations.map((station) => (
+                        <option key={station.station_number} value={station.station_number}>
+                          Station {station.station_number}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    onClick={addDicomStationMapping}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold"
+                  >
+                    Add Mapping
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2380,6 +3085,11 @@ function DicomSyncPanel(): React.JSX.Element {
   const [uploadFolder, setUploadFolder] = useState('')
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState<DicomUploadResult | null>(null)
+  const [preparedFolder, setPreparedFolder] = useState('')
+  const [preparing, setPreparing] = useState(false)
+  const [preparedResult, setPreparedResult] = useState<DicomPreparedExportResult | null>(null)
+  const [preparedUploading, setPreparedUploading] = useState(false)
+  const [preparedUploadResult, setPreparedUploadResult] = useState<DicomPreparedUploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const cfg = {
@@ -2442,6 +3152,60 @@ function DicomSyncPanel(): React.JSX.Element {
   async function browseUploadFolder(): Promise<void> {
     const p = await window.api.selectFolder()
     if (p) setUploadFolder(p)
+  }
+
+  async function browsePreparedFolder(): Promise<void> {
+    const p = await window.api.selectFolder()
+    if (p) {
+      setPreparedFolder(p)
+      setPreparedResult(null)
+      setPreparedUploadResult(null)
+    }
+  }
+
+  async function prepareExportFolder(): Promise<void> {
+    if (!preparedFolder) return
+    setPreparing(true)
+    setError(null)
+    setPreparedResult(null)
+    setPreparedUploadResult(null)
+    try {
+      const result = await window.api.prepareDicomExportFolder(preparedFolder) as DicomPreparedExportResult
+      setPreparedResult(result)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setPreparing(false)
+    }
+  }
+
+  async function uploadPreparedExportFolder(): Promise<void> {
+    if (!preparedFolder || !preparedResult) return
+    const validKeys = preparedResult.groups.filter((group) => group.status === 'valid').map((group) => group.key)
+    if (validKeys.length === 0) {
+      setError('No valid station folders are ready to upload.')
+      return
+    }
+    setPreparedUploading(true)
+    setError(null)
+    setPreparedUploadResult(null)
+    setSyncResult(null)
+    await saveConfig()
+    try {
+      const result = await window.api.uploadPreparedDicomExportFolder(
+        cfg,
+        preparedFolder,
+        validKeys
+      ) as DicomPreparedUploadResult
+      setPreparedUploadResult(result)
+      setPreparedResult(result.prepared)
+      setSyncResult(result.sync_result)
+      setUnresolved(result.sync_result.unresolved_items)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setPreparedUploading(false)
+    }
   }
 
   async function uploadFolderToOrthanc(): Promise<void> {
@@ -2530,6 +3294,185 @@ function DicomSyncPanel(): React.JSX.Element {
 
       <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-4">
         <div>
+          <h3 className="text-base font-bold text-slate-700 mb-1">Prepare machine image export</h3>
+          <p className="text-sm text-slate-500">
+            Select an export root containing candidate folders named like{' '}
+            <code className="bg-slate-100 px-1 rounded">123456-AA-01</code> or reference folders named like{' '}
+            <code className="bg-slate-100 px-1 rounded">REF-AA-01</code>. JPG and PNG files are
+            converted to DICOM; existing DICOM files are normalized into one study per folder. TIFF files
+            are reported and skipped.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            readOnly
+            value={preparedFolder}
+            placeholder="No machine export folder selected"
+            className="flex-1 text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 truncate"
+          />
+          <button
+            onClick={browsePreparedFolder}
+            className="px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg text-sm font-medium text-slate-700"
+          >
+            Browse
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={prepareExportFolder}
+            disabled={preparing || !preparedFolder}
+            className="px-4 py-2 rounded-lg bg-slate-700 text-white text-sm font-semibold hover:bg-slate-800 disabled:opacity-40"
+          >
+            {preparing ? 'Checking export...' : 'Review Export'}
+          </button>
+          <button
+            onClick={uploadPreparedExportFolder}
+            disabled={
+              preparedUploading ||
+              !preparedResult ||
+              preparedResult.valid_groups === 0 ||
+              !orthancBaseUrl.trim() ||
+              !ohifBaseUrl.trim()
+            }
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40"
+          >
+            {preparedUploading ? 'Preparing and syncing...' : 'Upload Valid Groups and Sync'}
+          </button>
+        </div>
+
+        {preparedResult && (
+          <div className={`rounded-lg p-4 text-sm ${
+            preparedResult.invalid_groups > 0
+              ? 'bg-amber-50 border border-amber-200'
+              : 'bg-green-50 border border-green-200'
+          }`}>
+            <p className={`font-semibold mb-3 ${
+              preparedResult.invalid_groups > 0 ? 'text-amber-700' : 'text-green-700'
+            }`}>
+              Found {preparedResult.valid_groups} valid folder(s) and {preparedResult.invalid_groups} invalid.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-slate-700">
+              <Metric label="Groups" value={preparedResult.scanned_groups} />
+              <Metric label="Valid" value={preparedResult.valid_groups} />
+              <Metric label="Invalid" value={preparedResult.invalid_groups} />
+              <Metric
+                label="Files"
+                value={preparedResult.groups.reduce((sum, group) => sum + group.file_count, 0)}
+              />
+            </div>
+
+            {preparedResult.groups.some((group) => group.status === 'valid') && (
+              <details className="mt-4" open>
+                <summary className="cursor-pointer text-slate-700 font-medium">
+                  Valid DICOM groups
+                </summary>
+                <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-500 uppercase">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold">Folder</th>
+                        <th className="px-3 py-2 text-left font-semibold">Student</th>
+                        <th className="px-3 py-2 text-left font-semibold">Station</th>
+                        <th className="px-3 py-2 text-left font-semibold">Files</th>
+                        <th className="px-3 py-2 text-left font-semibold">Warnings</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {preparedResult.groups
+                        .filter((group) => group.status === 'valid')
+                        .map((group) => (
+                          <tr key={group.key}>
+                            <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">{group.key}</td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {group.group_type === 'reference'
+                                ? 'Reference image'
+                                : `${group.student_id} ${group.full_name ? `- ${group.full_name}` : ''}`}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
+                              {group.group_type === 'reference'
+                                ? group.source_station_number === group.station_number
+                                  ? `REF ${group.module_code} Stn ${group.station_number}`
+                                  : `REF ${group.module_code} source Stn ${group.source_station_number} -> Stn ${group.station_number}`
+                                : group.source_station_number === group.station_number
+                                  ? `${group.module_code} Stn ${group.station_number}`
+                                  : `${group.module_code} source Stn ${group.source_station_number} -> Stn ${group.station_number}`}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
+                              {group.image_count} image / {group.dicom_count} DICOM
+                            </td>
+                            <td className="px-3 py-2 text-amber-700">
+                              {group.warnings.length > 0 ? group.warnings.join(' ') : 'None'}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+
+            {preparedResult.groups.some((group) => group.status === 'invalid') && (
+              <details className="mt-4" open>
+                <summary className="cursor-pointer text-amber-700 font-medium">
+                  Invalid or skipped DICOM groups
+                </summary>
+                <ul className="mt-2 space-y-2 text-xs max-h-48 overflow-y-auto">
+                  {preparedResult.groups
+                    .filter((group) => group.status === 'invalid')
+                    .map((group) => (
+                      <li key={`${group.key}-${group.folder_path}`}>
+                        <span className="font-mono text-slate-600 break-all">{group.folder_path}</span>
+                        <br />
+                        <span className="text-amber-800">{group.reason}</span>
+                      </li>
+                    ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+
+        {preparedUploadResult && (
+          <div className={`rounded-lg p-4 text-sm ${
+            preparedUploadResult.errors > 0
+              ? 'bg-amber-50 border border-amber-200'
+              : 'bg-green-50 border border-green-200'
+          }`}>
+            <p className={`font-semibold mb-2 ${
+              preparedUploadResult.errors > 0 ? 'text-amber-700' : 'text-green-700'
+            }`}>
+              Uploaded {preparedUploadResult.uploaded} generated DICOM file(s), then synced Orthanc.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-slate-700">
+              <Metric label="Groups" value={preparedUploadResult.scanned} />
+              <Metric label="Uploaded" value={preparedUploadResult.uploaded} />
+              <Metric label="Skipped" value={preparedUploadResult.skipped} />
+              <Metric label="Errors" value={preparedUploadResult.errors} />
+            </div>
+            {preparedUploadResult.errors > 0 && (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-amber-700 font-medium">
+                  Show preparation/upload errors
+                </summary>
+                <ul className="mt-2 space-y-1 text-xs max-h-44 overflow-y-auto">
+                  {preparedUploadResult.items
+                    .filter((item) => item.status === 'error')
+                    .map((item, idx) => (
+                      <li key={`${item.group_key}-${idx}`}>
+                        <span className="font-mono text-slate-600">{item.group_key}</span>
+                        <br />
+                        <span className="text-amber-800">{item.reason}</span>
+                      </li>
+                    ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="border border-slate-200 rounded-xl p-4 flex flex-col gap-4">
+        <div>
           <h3 className="text-base font-bold text-slate-700 mb-1">Upload post-exam DICOM export</h3>
           <p className="text-sm text-slate-500">
             Select a folder exported from the ultrasound machine or local Orthanc. Each file is posted
@@ -2613,6 +3556,23 @@ function DicomSyncPanel(): React.JSX.Element {
                 {syncResult.links.map((link) => (
                   <li key={link.id} className="font-mono text-slate-600 break-all">
                     {link.student_id} {link.module_code} Stn {link.station_number}: {link.study_instance_uid}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {syncResult.reference_links.length > 0 && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-green-700 font-medium">
+                {syncResult.reference_links.length} linked reference slot(s)
+              </summary>
+              <ul className="mt-2 space-y-1 text-xs max-h-44 overflow-y-auto">
+                {syncResult.reference_links.map((link) => (
+                  <li
+                    key={`${link.profile_id}-${link.module_code}-${link.station_number}-${link.slot}`}
+                    className="font-mono text-slate-600 break-all"
+                  >
+                    REF {link.module_code} Stn {link.station_number} slot {link.slot}: {link.study_instance_uid}
                   </li>
                 ))}
               </ul>

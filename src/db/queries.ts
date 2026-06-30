@@ -32,11 +32,17 @@ export interface ProfileStation {
   form_fields: StationFormField[]
 }
 
+export interface DicomStationMapping {
+  source_station_number: number
+  target_station_number: number
+}
+
 export interface ProfileModule {
   code: string
   name: string
   aliases: string[]
   stations: ProfileStation[]
+  dicom_station_mappings: DicomStationMapping[]
 }
 
 export interface ProfileConfig {
@@ -100,6 +106,60 @@ export function setActiveAssessmentProfile(db: Database.Database, profileId: str
   db.prepare('UPDATE assessment_profiles SET is_active = 1, updated_at = ? WHERE id = ?').run(nowIso(), profileId)
 }
 
+export function deleteAssessmentProfile(
+  db: Database.Database,
+  profileId: string
+): { deleted_profile_id: string; active_profile_id: string } {
+  const profile = db
+    .prepare('SELECT id, is_active FROM assessment_profiles WHERE id = ?')
+    .get(profileId) as { id: string; is_active: number } | undefined
+  if (!profile) throw new Error('Profile was not found.')
+
+  const profileCount = (
+    db.prepare('SELECT COUNT(*) AS c FROM assessment_profiles').get() as { c: number }
+  ).c
+  if (profileCount <= 1) {
+    throw new Error('Cannot delete the only assessment profile. Create or import another profile first.')
+  }
+
+  const replacement = db.prepare(`
+    SELECT id
+    FROM assessment_profiles
+    WHERE id <> ?
+    ORDER BY is_active DESC, updated_at DESC, name
+    LIMIT 1
+  `).get(profileId) as { id: string } | undefined
+  if (!replacement) throw new Error('No replacement profile is available.')
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM profile_marking_locks WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM profile_marking_state WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM examiner_form_responses WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM resolved_form_responses WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM examiner_module_assignments WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM assessment_examiners WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM student_enrollments WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM profile_students WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM reference_assets WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM reference_dicom_links WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM station_form_fields WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM dicom_station_mappings WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM assessment_stations WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM assessment_module_aliases WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM assessment_modules WHERE profile_id = ?').run(profileId)
+    db.prepare('DELETE FROM assessment_profiles WHERE id = ?').run(profileId)
+
+    if (profile.is_active) {
+      db.prepare('UPDATE assessment_profiles SET is_active = 0').run()
+      db.prepare('UPDATE assessment_profiles SET is_active = 1, updated_at = ? WHERE id = ?')
+        .run(nowIso(), replacement.id)
+    }
+  })
+  tx()
+
+  return { deleted_profile_id: profileId, active_profile_id: profile.is_active ? replacement.id : getActiveProfileId(db) }
+}
+
 export function getProfileModules(db: Database.Database, profileId = getActiveProfileId(db)): ProfileModule[] {
   const modules = db
     .prepare(
@@ -156,11 +216,46 @@ export function getProfileModules(db: Database.Database, profileId = getActivePr
     }
   }
 
+  const mappings = db
+    .prepare(
+      `SELECT module_code, source_station_number, target_station_number
+       FROM dicom_station_mappings
+       WHERE profile_id = ?
+       ORDER BY module_code, source_station_number`
+    )
+    .all(profileId) as Array<DicomStationMapping & { module_code: string }>
+  const mappingMap = new Map<string, DicomStationMapping[]>()
+  for (const mapping of mappings) {
+    const list = mappingMap.get(mapping.module_code) ?? []
+    list.push({
+      source_station_number: mapping.source_station_number,
+      target_station_number: mapping.target_station_number
+    })
+    mappingMap.set(mapping.module_code, list)
+  }
+
   return modules.map((mod) => ({
     ...mod,
     aliases: aliasMap.get(mod.code) ?? [mod.code],
-    stations: stationMap.get(mod.code) ?? []
+    stations: stationMap.get(mod.code) ?? [],
+    dicom_station_mappings: mappingMap.get(mod.code) ?? []
   }))
+}
+
+export function resolveDicomStationNumber(
+  db: Database.Database,
+  moduleCode: string,
+  sourceStationNumber: number,
+  profileId = getActiveProfileId(db)
+): number {
+  const row = db
+    .prepare(
+      `SELECT target_station_number
+       FROM dicom_station_mappings
+       WHERE profile_id = ? AND module_code = ? AND source_station_number = ?`
+    )
+    .get(profileId, moduleCode, sourceStationNumber) as { target_station_number: number } | undefined
+  return row?.target_station_number ?? sourceStationNumber
 }
 
 export function getActiveProfileConfig(db: Database.Database): ProfileConfig | null {

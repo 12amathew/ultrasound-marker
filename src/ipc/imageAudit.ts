@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'fs'
 import { join, extname } from 'path'
 import type Database from 'better-sqlite3'
+import { getActiveProfileId } from '../db/queries'
 import type { AuditEntry, DicomStudyLink } from '../types/ipc'
 
 const IMAGE_EXTS = new Set(['.tif', '.tiff', '.jpg', '.jpeg', '.png'])
@@ -20,11 +21,18 @@ export function runImageAudit(
   targetRoot: string,
   modulesConfig: ModuleConfig[]
 ): AuditEntry[] {
+  const profileId = getActiveProfileId(db)
   const students = db
     .prepare(
-      'SELECT student_id, full_name, module_code FROM students ORDER BY module_code, full_name'
+      `SELECT ps.student_id, ps.full_name, se.module_code
+       FROM profile_students ps
+       JOIN student_enrollments se
+        ON se.profile_id = ps.profile_id
+       AND se.student_id = ps.student_id
+       WHERE ps.profile_id = ?
+       ORDER BY se.module_code, ps.full_name`
     )
-    .all() as { student_id: string; full_name: string; module_code: string }[]
+    .all(profileId) as { student_id: string; full_name: string; module_code: string }[]
 
   const moduleStationsMap = new Map<string, StationConfig[]>()
   for (const mod of modulesConfig) {

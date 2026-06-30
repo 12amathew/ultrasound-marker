@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, basename } from 'path'
+import { join, basename, extname } from 'path'
 import { existsSync, copyFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'fs'
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import Database from 'better-sqlite3'
@@ -23,6 +23,7 @@ import {
   listAssessmentProfiles,
   createAssessmentProfile,
   setActiveAssessmentProfile,
+  deleteAssessmentProfile,
   getStationDefinition,
   saveExaminerFormResponses,
   getExaminerFormMarksForStation,
@@ -45,16 +46,24 @@ import {
 import {
   getDicomLinksForStation,
   getDicomServerConfig,
+  getDicomStudyCandidateDetails,
+  getDicomStudyCandidates,
   getDicomStudyPreview,
   getDicomStudyPreviews,
+  getReferenceDicomLinks,
   getDicomUnresolvedStudyDetails,
   getRecentDicomUnresolved,
+  linkDicomStudyToStation,
+  linkReferenceDicomStudy,
   linkUnresolvedDicomStudyToStation,
+  prepareDicomExportFolder,
   refreshDicomLinkPreviewState,
   saveDicomServerConfig,
   syncDicomStudies,
   testOrthancConnection,
   unlinkDicomStudyLink,
+  unlinkReferenceDicomStudy,
+  uploadPreparedDicomExportFolder,
   uploadDicomFolderToOrthanc
 } from '../ipc/dicom'
 import type { AppUpdateStatus, DicomServerConfig, ModuleProgress } from '../types/ipc'
@@ -449,6 +458,10 @@ function registerIpcHandlers(): void {
     setActiveAssessmentProfile(getDb(), profileId)
   })
 
+  ipcMain.handle('profiles:delete', (_e, profileId: string) => {
+    return deleteAssessmentProfile(getDb(), profileId)
+  })
+
   ipcMain.handle('profiles:getStation', (_e, moduleCode: string, stationNumber: number) => {
     return getStationDefinition(getDb(), moduleCode, stationNumber)
   })
@@ -660,10 +673,50 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('images:getReferenceImages', (_e, module_code: string, station_number: number) => {
-    const refRoot = db ? getConfig(db, 'reference_images_root') : null
-    if (!refRoot) return { img1Path: null, img2Path: null }
-    return getReferenceImages(refRoot, module_code, station_number)
+    const database = getDb()
+    const refRoot = getConfig(database, 'reference_images_root')
+    const local = refRoot ? getReferenceImages(refRoot, module_code, station_number) : { img1Path: null, img2Path: null }
+    const links = getReferenceDicomLinks(database, module_code, station_number)
+    return {
+      ...local,
+      img1DicomLink: links.find((link) => link.slot === 1) ?? null,
+      img2DicomLink: links.find((link) => link.slot === 2) ?? null
+    }
   })
+
+  ipcMain.handle(
+    'images:copyReferenceImage',
+    (_e, srcPath: string, module_code: string, station_number: number, slot: 1 | 2) => {
+      const database = getDb()
+      const activeProfile = getActiveProfileConfig(database)
+      if (!activeProfile) return { success: false, reason: 'No active profile configured.' }
+
+      let refRoot = getConfig(database, 'reference_images_root')
+      if (!refRoot) {
+        refRoot = join(app.getPath('userData'), 'profile-references', activeProfile.profile.id)
+        setConfig(database, 'reference_images_root', refRoot)
+      }
+
+      const ext = extname(srcPath).toLowerCase()
+      if (!['.jpg', '.jpeg', '.png', '.tif', '.tiff'].includes(ext)) {
+        return { success: false, reason: 'Reference image must be JPG, PNG, or TIFF.' }
+      }
+      if (slot !== 1 && slot !== 2) {
+        return { success: false, reason: 'Reference slot must be 1 or 2.' }
+      }
+
+      try {
+        if (!existsSync(refRoot)) mkdirSync(refRoot, { recursive: true })
+        const cleanModule = module_code.trim().toUpperCase()
+        const destName = `REF_${cleanModule}_S${station_number}_IMG${slot}${ext}`
+        const destPath = join(refRoot, destName)
+        copyFileSync(srcPath, destPath)
+        return { success: true, destPath }
+      } catch (err) {
+        return { success: false, reason: String(err) }
+      }
+    }
+  )
 
   ipcMain.handle('images:readFile', (_e, filePath: string) => {
     return readFileAsBase64(filePath)
@@ -774,6 +827,18 @@ function registerIpcHandlers(): void {
     return uploadDicomFolderToOrthanc(cfg, folderPath)
   })
 
+  ipcMain.handle('dicom:prepareUploadExportFolder', (_e, folderPath: string) => {
+    return prepareDicomExportFolder(getDb(), folderPath)
+  })
+
+  ipcMain.handle(
+    'dicom:uploadPreparedExportFolder',
+    async (_e, cfg: DicomServerConfig, folderPath: string, validGroupKeys: string[]) => {
+      saveDicomServerConfig(getDb(), cfg)
+      return uploadPreparedDicomExportFolder(getDb(), cfg, folderPath, validGroupKeys)
+    }
+  )
+
   ipcMain.handle(
     'dicom:getLinksForStation',
     (_e, student_id: string, module_code: string, station_number: number) => {
@@ -793,9 +858,52 @@ function registerIpcHandlers(): void {
     return getRecentDicomUnresolved(getDb(), limit ?? 100)
   })
 
+  ipcMain.handle('dicom:getStudyCandidates', (_e, limit?: number, query?: string) => {
+    return getDicomStudyCandidates(getDb(), limit ?? 500, query ?? '')
+  })
+
+  ipcMain.handle('dicom:getStudyCandidateDetails', (_e, orthanc_study_id: string) => {
+    return getDicomStudyCandidateDetails(getDb(), orthanc_study_id)
+  })
+
   ipcMain.handle('dicom:getUnresolvedDetails', (_e, unresolved_id: number) => {
     return getDicomUnresolvedStudyDetails(getDb(), unresolved_id)
   })
+
+  ipcMain.handle(
+    'dicom:linkStudyToStation',
+    (
+      _e,
+      orthanc_study_id: string,
+      student_id: string,
+      module_code: string,
+      station_number: number,
+      move_existing: boolean
+    ) => {
+      return linkDicomStudyToStation(
+        getDb(),
+        orthanc_study_id,
+        student_id,
+        module_code,
+        station_number,
+        move_existing
+      )
+    }
+  )
+
+  ipcMain.handle(
+    'dicom:linkReferenceStudy',
+    (_e, orthanc_study_id: string, module_code: string, station_number: number, slot: 1 | 2) => {
+      return linkReferenceDicomStudy(getDb(), orthanc_study_id, module_code, station_number, slot)
+    }
+  )
+
+  ipcMain.handle(
+    'dicom:unlinkReferenceStudy',
+    (_e, module_code: string, station_number: number, slot: 1 | 2) => {
+      return unlinkReferenceDicomStudy(getDb(), module_code, station_number, slot)
+    }
+  )
 
   ipcMain.handle(
     'dicom:linkUnresolvedToStation',

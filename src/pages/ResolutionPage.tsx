@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAppStore } from '../store/appStore'
 import ImageViewer from '../components/ImageViewer'
+import DicomPreviewStack from '../components/DicomPreviewStack'
 import CandidateInstructionsPanel from '../components/CandidateInstructionsPanel'
 import type { DicomStudyLink, ExaminerFormMarkDetail, FieldResponseInput, DisagreementRow, StationFormField } from '../types/ipc'
 
@@ -63,14 +64,15 @@ export default function ResolutionPage(): React.JSX.Element {
 
     // Load local image data only when no linked DICOM study exists.
     const hasDicomStudy = links.length > 0
-    const [d1, d2, r1] = await Promise.all([
+    const [d1, d2, r1, ref1Preview] = await Promise.all([
       !hasDicomStudy && studentImgs.img1Path ? window.api.readImageFile(studentImgs.img1Path) : Promise.resolve(null),
       !hasDicomStudy && studentImgs.img2Path ? window.api.readImageFile(studentImgs.img2Path) : Promise.resolve(null),
-      refImgs.img1Path ? window.api.readImageFile(refImgs.img1Path) : Promise.resolve(null)
+      !refImgs.img1DicomLink && refImgs.img1Path ? window.api.readImageFile(refImgs.img1Path) : Promise.resolve(null),
+      refImgs.img1DicomLink ? window.api.getDicomStudyPreviews(refImgs.img1DicomLink.orthanc_study_id, 1) : Promise.resolve(null)
     ])
     setImg1Data(d1)
     setImg2Data(d2)
-    setRefImg1Data(r1)
+    setRefImg1Data(ref1Preview?.previews[0]?.dataUrl ?? r1)
   }
 
   async function selectStudent(idx: number): Promise<void> {
@@ -306,13 +308,11 @@ export default function ResolutionPage(): React.JSX.Element {
                       Open OHIF
                     </button>
                   </div>
-                  <div className="h-[520px] rounded-lg overflow-hidden bg-slate-900 border border-slate-800">
-                    <iframe
-                      src={activeDicomLink.ohif_url}
-                      title={`OHIF ${activeDicomLink.patient_id}`}
-                      className="w-full h-full border-0 bg-slate-900"
-                    />
-                  </div>
+                  <DicomPreviewStack
+                    orthancStudyId={activeDicomLink.orthanc_study_id}
+                    label={`DICOM ${activeDicomLink.patient_id}`}
+                    className="h-[520px]"
+                  />
                 </div>
               ) : (
                 <div className="flex gap-4 p-4">

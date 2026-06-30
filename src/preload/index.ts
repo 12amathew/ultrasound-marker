@@ -32,6 +32,7 @@ const api = {
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
   createProfile: (name: string) => ipcRenderer.invoke('profiles:create', name),
   setActiveProfile: (profileId: string) => ipcRenderer.invoke('profiles:setActive', profileId),
+  deleteProfile: (profileId: string) => ipcRenderer.invoke('profiles:delete', profileId),
   getStationDefinition: (moduleCode: string, stationNumber: number) =>
     ipcRenderer.invoke('profiles:getStation', moduleCode, stationNumber),
   saveProfileConfig: (cfg: unknown) => ipcRenderer.invoke('profiles:saveConfig', cfg),
@@ -163,6 +164,9 @@ const api = {
   getReferenceImages: (module_code: string, station_number: number) =>
     ipcRenderer.invoke('images:getReferenceImages', module_code, station_number),
 
+  copyReferenceImage: (srcPath: string, module_code: string, station_number: number, slot: 1 | 2) =>
+    ipcRenderer.invoke('images:copyReferenceImage', srcPath, module_code, station_number, slot),
+
   readImageFile: (filePath: string) => ipcRenderer.invoke('images:readFile', filePath),
 
   // Export
@@ -194,6 +198,13 @@ const api = {
     ipcRenderer.invoke('dicom:testConnection', cfg),
   uploadDicomFolder: (cfg: { orthanc_base_url: string; ohif_base_url: string }, folderPath: string) =>
     ipcRenderer.invoke('dicom:uploadFolder', cfg, folderPath),
+  prepareDicomExportFolder: (folderPath: string) =>
+    ipcRenderer.invoke('dicom:prepareUploadExportFolder', folderPath),
+  uploadPreparedDicomExportFolder: (
+    cfg: { orthanc_base_url: string; ohif_base_url: string },
+    folderPath: string,
+    validGroupKeys: string[]
+  ) => ipcRenderer.invoke('dicom:uploadPreparedExportFolder', cfg, folderPath, validGroupKeys),
   syncDicomStudies: (cfg: { orthanc_base_url: string; ohif_base_url: string }) =>
     ipcRenderer.invoke('dicom:sync', cfg),
   getDicomLinksForStation: (
@@ -206,8 +217,30 @@ const api = {
   getDicomStudyPreviews: (orthanc_study_id: string, limit?: number) =>
     ipcRenderer.invoke('dicom:getStudyPreviews', orthanc_study_id, limit),
   getDicomUnresolved: (limit?: number) => ipcRenderer.invoke('dicom:getUnresolved', limit),
+  getDicomStudyCandidates: (limit?: number, query?: string) =>
+    ipcRenderer.invoke('dicom:getStudyCandidates', limit, query),
+  getDicomStudyCandidateDetails: (orthanc_study_id: string) =>
+    ipcRenderer.invoke('dicom:getStudyCandidateDetails', orthanc_study_id),
   getDicomUnresolvedDetails: (unresolved_id: number) =>
     ipcRenderer.invoke('dicom:getUnresolvedDetails', unresolved_id),
+  linkDicomStudyToStation: (
+    orthanc_study_id: string,
+    student_id: string,
+    module_code: string,
+    station_number: number,
+    move_existing: boolean
+  ) => ipcRenderer.invoke('dicom:linkStudyToStation', orthanc_study_id, student_id, module_code, station_number, move_existing),
+  linkReferenceDicomStudy: (
+    orthanc_study_id: string,
+    module_code: string,
+    station_number: number,
+    slot: 1 | 2
+  ) => ipcRenderer.invoke('dicom:linkReferenceStudy', orthanc_study_id, module_code, station_number, slot),
+  unlinkReferenceDicomStudy: (
+    module_code: string,
+    station_number: number,
+    slot: 1 | 2
+  ) => ipcRenderer.invoke('dicom:unlinkReferenceStudy', module_code, station_number, slot),
   linkUnresolvedDicomToStation: (
     unresolved_id: number,
     student_id: string,
